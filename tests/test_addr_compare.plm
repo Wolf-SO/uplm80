@@ -1,0 +1,324 @@
+/*
+ * TEST: ADDRESS COMPARISON OPERATORS (Bug 2 regression test)
+ *
+ * Tests that <, >, <=, >= work correctly for ADDRESS (16-bit unsigned) types.
+ * Bug 2: Comparisons were using signed logic instead of unsigned carry-based.
+ *
+ * Key test cases:
+ * - Values near 32767/32768 boundary (sign bit boundary)
+ * - Large values (>32768) compared to small values
+ * - Edge cases: 0, 65535, etc.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_addr_compare.plm -o tests/test_addr_compare.mac
+ *   um80 tests/test_addr_compare.mac
+ *   ul80 -o tests/test_addr_compare.com tests/test_addr_compare.rel
+ *   cpmemu tests/test_addr_compare.com
+ */
+
+0100H:
+
+TEST$ADDR$COMPARE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * ADDRESS COMPARISON TESTS
+ * ================================================================ */
+
+TEST$BASIC$COMPARE: PROCEDURE;
+    DECLARE A ADDRESS, B ADDRESS;
+
+    /* Basic comparisons */
+    A = 100;
+    B = 200;
+
+    IF A < B THEN
+        CALL PRINT$TEST(.'lt_basic $', 1);
+    ELSE
+        CALL PRINT$TEST(.'lt_basic $', 0);  /* Expected: 1 */
+
+    IF B > A THEN
+        CALL PRINT$TEST(.'gt_basic $', 1);
+    ELSE
+        CALL PRINT$TEST(.'gt_basic $', 0);  /* Expected: 1 */
+
+    IF A <= B THEN
+        CALL PRINT$TEST(.'le_basic $', 1);
+    ELSE
+        CALL PRINT$TEST(.'le_basic $', 0);  /* Expected: 1 */
+
+    IF B >= A THEN
+        CALL PRINT$TEST(.'ge_basic $', 1);
+    ELSE
+        CALL PRINT$TEST(.'ge_basic $', 0);  /* Expected: 1 */
+
+END TEST$BASIC$COMPARE;
+
+TEST$SIGN$BOUNDARY: PROCEDURE;
+    DECLARE A ADDRESS, B ADDRESS;
+
+    /* Sign bit boundary - this is where Bug 2 showed up */
+    /* 32768 has the sign bit set (0x8000) */
+
+    A = 32767;  /* 0x7FFF - largest "positive" */
+    B = 32768;  /* 0x8000 - sign bit set */
+
+    /* Unsigned: 32767 < 32768 is TRUE */
+    /* Signed (buggy): 32767 < -32768 would be FALSE */
+    IF A < B THEN
+        CALL PRINT$TEST(.'sign_lt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'sign_lt1 $', 0);  /* Expected: 1 */
+
+    IF B > A THEN
+        CALL PRINT$TEST(.'sign_gt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'sign_gt1 $', 0);  /* Expected: 1 */
+
+    /* More boundary tests */
+    A = 1;
+    B = 32768;  /* Unsigned: 1 < 32768 */
+    IF A < B THEN
+        CALL PRINT$TEST(.'sign_lt2 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'sign_lt2 $', 0);  /* Expected: 1 */
+
+    A = 32768;
+    B = 1;
+    IF A > B THEN
+        CALL PRINT$TEST(.'sign_gt2 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'sign_gt2 $', 0);  /* Expected: 1 */
+
+END TEST$SIGN$BOUNDARY;
+
+TEST$LARGE$VALUES: PROCEDURE;
+    DECLARE A ADDRESS, B ADDRESS;
+
+    /* Large values above 32768 */
+    A = 40000;
+    B = 50000;
+
+    IF A < B THEN
+        CALL PRINT$TEST(.'large_lt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'large_lt1 $', 0);  /* Expected: 1 */
+
+    IF B > A THEN
+        CALL PRINT$TEST(.'large_gt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'large_gt1 $', 0);  /* Expected: 1 */
+
+    /* Maximum value */
+    A = 65534;
+    B = 65535;
+
+    IF A < B THEN
+        CALL PRINT$TEST(.'max_lt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'max_lt1 $', 0);  /* Expected: 1 */
+
+    A = 65535;
+    B = 0;
+
+    IF A > B THEN
+        CALL PRINT$TEST(.'max_gt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'max_gt1 $', 0);  /* Expected: 1 */
+
+    /* Compare with zero */
+    A = 0;
+    B = 65535;
+
+    IF A < B THEN
+        CALL PRINT$TEST(.'zero_lt1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'zero_lt1 $', 0);  /* Expected: 1 */
+
+END TEST$LARGE$VALUES;
+
+TEST$EQUAL$BOUNDARY: PROCEDURE;
+    DECLARE A ADDRESS, B ADDRESS;
+
+    /* Equality at boundaries */
+    A = 32768;
+    B = 32768;
+
+    IF A <= B THEN
+        CALL PRINT$TEST(.'eq_le1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'eq_le1 $', 0);  /* Expected: 1 */
+
+    IF A >= B THEN
+        CALL PRINT$TEST(.'eq_ge1 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'eq_ge1 $', 0);  /* Expected: 1 */
+
+    A = 65535;
+    B = 65535;
+
+    IF A <= B THEN
+        CALL PRINT$TEST(.'eq_le2 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'eq_le2 $', 0);  /* Expected: 1 */
+
+    IF A >= B THEN
+        CALL PRINT$TEST(.'eq_ge2 $', 1);
+    ELSE
+        CALL PRINT$TEST(.'eq_ge2 $', 0);  /* Expected: 1 */
+
+END TEST$EQUAL$BOUNDARY;
+
+TEST$COMPARE$AS$VALUE: PROCEDURE;
+    DECLARE A ADDRESS, B ADDRESS;
+    DECLARE RESULT ADDRESS;
+
+    /* Comparison result used as value (should be 0 or 255) */
+    A = 100;
+    B = 50000;
+
+    RESULT = A < B;
+    CALL PRINT$TEST(.'val_lt1 $', RESULT);  /* Expected: 255 (TRUE) */
+
+    RESULT = B < A;
+    CALL PRINT$TEST(.'val_lt2 $', RESULT);  /* Expected: 0 (FALSE) */
+
+    /* Large value comparisons as value */
+    A = 40000;
+    B = 50000;
+    RESULT = A < B;
+    CALL PRINT$TEST(.'val_lt3 $', RESULT);  /* Expected: 255 (TRUE) */
+
+    RESULT = A > B;
+    CALL PRINT$TEST(.'val_gt1 $', RESULT);  /* Expected: 0 (FALSE) */
+
+END TEST$COMPARE$AS$VALUE;
+
+TEST$LOOP$WITH$ADDR: PROCEDURE;
+    DECLARE COUNT ADDRESS;
+    DECLARE ITERATIONS ADDRESS;
+
+    /* Bug 5 test - ADDRESS subtraction in loops */
+    COUNT = 5;
+    ITERATIONS = 0;
+
+    DO WHILE COUNT > 0;
+        ITERATIONS = ITERATIONS + 1;
+        COUNT = COUNT - 1;
+    END;
+
+    CALL PRINT$TEST(.'loop_cnt1 $', ITERATIONS);  /* Expected: 5 */
+
+    /* Larger count */
+    COUNT = 100;
+    ITERATIONS = 0;
+
+    DO WHILE COUNT > 0;
+        ITERATIONS = ITERATIONS + 1;
+        COUNT = COUNT - 1;
+    END;
+
+    CALL PRINT$TEST(.'loop_cnt2 $', ITERATIONS);  /* Expected: 100 */
+
+    /* Down to specific value */
+    COUNT = 10;
+    ITERATIONS = 0;
+
+    DO WHILE COUNT > 5;
+        ITERATIONS = ITERATIONS + 1;
+        COUNT = COUNT - 1;
+    END;
+
+    CALL PRINT$TEST(.'loop_cnt3 $', ITERATIONS);  /* Expected: 5 */
+    CALL PRINT$TEST(.'loop_val3 $', COUNT);  /* Expected: 5 */
+
+END TEST$LOOP$WITH$ADDR;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'ADDRESS Comparison Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'========================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$BASIC$COMPARE;
+    CALL TEST$SIGN$BOUNDARY;
+    CALL TEST$LARGE$VALUES;
+    CALL TEST$EQUAL$BOUNDARY;
+    CALL TEST$COMPARE$AS$VALUE;
+    CALL TEST$LOOP$WITH$ADDR;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$ADDR$COMPARE;
+
+EOF

@@ -1,0 +1,325 @@
+/*
+ * TEST: GOTO OUT OF LOOPS (Stack cleanup verification)
+ *
+ * Tests that GOTO statements jumping out of loops properly clean up
+ * the stack. Some loop types (like DJNZ-optimized loops) push the
+ * loop counter onto the stack during execution.
+ *
+ * If GOTO doesn't clean up the stack, subsequent procedure calls
+ * and returns will be corrupted.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_goto_loops.plm -o tests/test_goto_loops.mac
+ *   um80 tests/test_goto_loops.mac
+ *   ul80 -o tests/test_goto_loops.com tests/test_goto_loops.rel
+ *   cpmemu tests/test_goto_loops.com
+ */
+
+0100H:
+
+TEST$GOTO$LOOPS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* Helper function to verify stack integrity */
+VERIFY$STACK: PROCEDURE ADDRESS;
+    /* If stack is corrupted, this return value will be wrong */
+    RETURN 12345;
+END VERIFY$STACK;
+
+/* ================================================================
+ * GOTO OUT OF LOOP TESTS
+ * ================================================================ */
+
+TEST$GOTO$SIMPLE$DO: PROCEDURE;
+    DECLARE X ADDRESS;
+
+    /* Simple DO block with GOTO */
+    X = 0;
+    DO;
+        X = 1;
+        GO TO SKIP1;
+        X = 99;  /* Should not execute */
+    END;
+SKIP1:
+    CALL PRINT$TEST(.'goto_do1 $', X);  /* Expected: 1 */
+
+    /* Verify stack is OK */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_do1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$SIMPLE$DO;
+
+TEST$GOTO$WHILE: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I ADDRESS;
+
+    /* GOTO out of DO WHILE */
+    X = 0;
+    I = 0;
+    DO WHILE I < 100;
+        X = X + 1;
+        IF X = 5 THEN GO TO SKIP2;
+        I = I + 1;
+    END;
+    X = 99;  /* Should not execute */
+SKIP2:
+    CALL PRINT$TEST(.'goto_wh1 $', X);  /* Expected: 5 */
+
+    /* Verify stack */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_wh1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$WHILE;
+
+TEST$GOTO$ITERATIVE: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I ADDRESS;
+
+    /* GOTO out of iterative DO (ADDRESS index - not DJNZ) */
+    X = 0;
+    DO I = 1 TO 100;
+        X = X + 1;
+        IF X = 7 THEN GO TO SKIP3;
+    END;
+    X = 99;
+SKIP3:
+    CALL PRINT$TEST(.'goto_it1 $', X);  /* Expected: 7 */
+
+    /* Verify stack */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_it1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$ITERATIVE;
+
+TEST$GOTO$BYTE$LOOP: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE;
+
+    /* GOTO out of BYTE iterative DO (may use DJNZ if index unused) */
+    /* Note: Index I is used in comparison, so may not use DJNZ */
+    X = 0;
+    DO I = 1 TO 100;
+        X = X + 1;
+        IF I = 10 THEN GO TO SKIP4;
+    END;
+    X = 99;
+SKIP4:
+    CALL PRINT$TEST(.'goto_bt1 $', X);  /* Expected: 10 */
+
+    /* Verify stack */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_bt1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$BYTE$LOOP;
+
+TEST$GOTO$DJNZ$LOOP: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE;
+    DECLARE TARGET ADDRESS;
+
+    /* GOTO out of loop where DJNZ optimization would apply */
+    /* (index not used in body - perfect for DJNZ) */
+    X = 0;
+    TARGET = 5;
+    DO I = 0 TO 100;  /* Index not used in expressions */
+        X = X + 1;
+        IF X = TARGET THEN GO TO SKIP5;
+    END;
+    X = 99;
+SKIP5:
+    CALL PRINT$TEST(.'goto_dj1 $', X);  /* Expected: 5 */
+
+    /* Verify stack - this is the critical test */
+    /* If DJNZ pushed B and GOTO didn't pop it, stack is corrupted */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_dj1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$DJNZ$LOOP;
+
+TEST$GOTO$NESTED$LOOPS: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE, J BYTE;
+
+    /* GOTO out of nested loops */
+    X = 0;
+    DO I = 0 TO 10;
+        DO J = 0 TO 10;
+            X = X + 1;
+            IF X = 25 THEN GO TO SKIP6;
+        END;
+    END;
+    X = 99;
+SKIP6:
+    CALL PRINT$TEST(.'goto_nest1 $', X);  /* Expected: 25 */
+
+    /* Verify stack - two loop frames to clean up */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_nest1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$NESTED$LOOPS;
+
+TEST$GOTO$DEEPLY$NESTED: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE, J BYTE, K BYTE;
+
+    /* Three levels of nesting */
+    X = 0;
+    DO I = 0 TO 5;
+        DO J = 0 TO 5;
+            DO K = 0 TO 5;
+                X = X + 1;
+                IF X = 50 THEN GO TO SKIP7;
+            END;
+        END;
+    END;
+    X = 99;
+SKIP7:
+    CALL PRINT$TEST(.'goto_deep1 $', X);  /* Expected: 50 */
+
+    /* Verify stack - three loop frames */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_deep1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$DEEPLY$NESTED;
+
+TEST$GOTO$WITH$OPERATIONS: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE;
+    DECLARE A ADDRESS, B ADDRESS;
+
+    /* Loop with operations that may affect stack, then GOTO */
+    X = 0;
+    A = 100;
+    B = 200;
+    DO I = 0 TO 100;
+        X = A + B;  /* Operations in loop */
+        X = X + 1;
+        IF X > 310 THEN GO TO SKIP8;
+    END;
+    X = 99;
+SKIP8:
+    CALL PRINT$TEST(.'goto_op1 $', X);  /* Expected: 311 */
+
+    /* Verify stack */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_op1s $', X);  /* Expected: 12345 */
+
+END TEST$GOTO$WITH$OPERATIONS;
+
+TEST$MULTIPLE$GOTOS: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE I BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* Simplified test - GOTO out of loop to end of procedure */
+    X = 0;
+    RESULT = 0;
+    DO I = 0 TO 100;
+        X = X + 1;
+        IF X = 3 THEN DO;
+            RESULT = X * 10;
+            GO TO MULTI$DONE;
+        END;
+    END;
+    RESULT = 99;
+
+MULTI$DONE:
+    CALL PRINT$TEST(.'goto_m1 $', RESULT);  /* Expected: 30 */
+
+    /* Verify stack */
+    X = VERIFY$STACK;
+    CALL PRINT$TEST(.'goto_ms $', X);  /* Expected: 12345 */
+
+END TEST$MULTIPLE$GOTOS;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'GOTO Out of Loops Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'=======================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$GOTO$SIMPLE$DO;
+    CALL TEST$GOTO$WHILE;
+    CALL TEST$GOTO$ITERATIVE;
+    CALL TEST$GOTO$BYTE$LOOP;
+    CALL TEST$GOTO$DJNZ$LOOP;
+    CALL TEST$GOTO$NESTED$LOOPS;
+    CALL TEST$GOTO$DEEPLY$NESTED;
+    CALL TEST$GOTO$WITH$OPERATIONS;
+    CALL TEST$MULTIPLE$GOTOS;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$GOTO$LOOPS;
+
+EOF

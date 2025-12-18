@@ -1,0 +1,304 @@
+/*
+ * TEST: DJNZ LOOP OPTIMIZATION (Bug 3 regression test)
+ *
+ * Tests that FOR loops using DJNZ optimization work correctly even when
+ * the loop body clobbers register B.
+ *
+ * Bug 3: DJNZ loop uses B as counter, but loop body operations (like
+ * addition, multiplication) can clobber B, corrupting the loop counter.
+ *
+ * The fix pushes/pops B around the loop body.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_djnz_loops.plm -o tests/test_djnz_loops.mac
+ *   um80 tests/test_djnz_loops.mac
+ *   ul80 -o tests/test_djnz_loops.com tests/test_djnz_loops.rel
+ *   cpmemu tests/test_djnz_loops.com
+ */
+
+0100H:
+
+TEST$DJNZ$LOOPS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * DJNZ LOOP TESTS
+ *
+ * DJNZ optimization triggers when:
+ * - Target is Z80
+ * - Loop index is BYTE and not used in body
+ * - Step is 1
+ * - Bounds are constant or variable BYTE
+ * ================================================================ */
+
+TEST$SIMPLE$DJNZ: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE COUNT ADDRESS;
+
+    /* Simple loop - index not used, should use DJNZ */
+    COUNT = 0;
+    DO I = 0 TO 4;  /* 5 iterations */
+        COUNT = COUNT + 1;
+    END;
+    CALL PRINT$TEST(.'djnz_s1 $', COUNT);  /* Expected: 5 */
+
+    COUNT = 0;
+    DO I = 0 TO 9;  /* 10 iterations */
+        COUNT = COUNT + 1;
+    END;
+    CALL PRINT$TEST(.'djnz_s2 $', COUNT);  /* Expected: 10 */
+
+END TEST$SIMPLE$DJNZ;
+
+TEST$ADD$IN$LOOP: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE X ADDRESS, Y ADDRESS, Z ADDRESS;
+
+    /* Loop with addition in body - Bug 3 case */
+    /* 16-bit addition may clobber B register */
+    X = 0;
+    Y = 10;
+    Z = 5;
+
+    DO I = 0 TO 4;  /* 5 iterations */
+        X = Y + Z;  /* This operation might clobber B */
+    END;
+    CALL PRINT$TEST(.'djnz_add1 $', X);  /* Expected: 15 */
+
+    /* Sum in loop */
+    X = 0;
+    DO I = 0 TO 4;
+        X = X + 10;  /* Accumulate */
+    END;
+    CALL PRINT$TEST(.'djnz_add2 $', X);  /* Expected: 50 */
+
+    /* Complex addition */
+    X = 0;
+    Y = 100;
+    Z = 200;
+    DO I = 0 TO 9;  /* 10 iterations */
+        X = X + Y + Z;  /* Multiple additions */
+    END;
+    CALL PRINT$TEST(.'djnz_add3 $', X);  /* Expected: 3000 */
+
+END TEST$ADD$IN$LOOP;
+
+TEST$MUL$IN$LOOP: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE X ADDRESS, Y ADDRESS;
+
+    /* Loop with multiplication - definitely clobbers B */
+    X = 1;
+    Y = 2;
+
+    DO I = 0 TO 4;  /* 5 iterations */
+        X = X * Y;  /* Multiply by 2 each time: 1,2,4,8,16,32 */
+    END;
+    CALL PRINT$TEST(.'djnz_mul1 $', X);  /* Expected: 32 */
+
+    /* Different multiplication pattern */
+    X = 0;
+    DO I = 0 TO 4;
+        X = X + 5 * 3;  /* Add 15 each iteration */
+    END;
+    CALL PRINT$TEST(.'djnz_mul2 $', X);  /* Expected: 75 */
+
+END TEST$MUL$IN$LOOP;
+
+TEST$DIV$IN$LOOP: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE X ADDRESS;
+
+    /* Loop with division - clobbers B */
+    X = 1000;
+
+    DO I = 0 TO 2;  /* 3 iterations */
+        X = X / 2;  /* Divide by 2: 1000,500,250,125 */
+    END;
+    CALL PRINT$TEST(.'djnz_div1 $', X);  /* Expected: 125 */
+
+    /* Division and addition */
+    X = 0;
+    DO I = 0 TO 4;
+        X = X + 100 / 5;  /* Add 20 each iteration */
+    END;
+    CALL PRINT$TEST(.'djnz_div2 $', X);  /* Expected: 100 */
+
+END TEST$DIV$IN$LOOP;
+
+TEST$NESTED$LOOPS: PROCEDURE;
+    DECLARE I BYTE, J BYTE;
+    DECLARE COUNT ADDRESS;
+
+    /* Nested DJNZ loops */
+    COUNT = 0;
+    DO I = 0 TO 4;
+        DO J = 0 TO 4;
+            COUNT = COUNT + 1;
+        END;
+    END;
+    CALL PRINT$TEST(.'djnz_nest1 $', COUNT);  /* Expected: 25 (5*5) */
+
+    /* Nested with inner operations */
+    COUNT = 0;
+    DO I = 0 TO 2;
+        DO J = 0 TO 3;
+            COUNT = COUNT + 10;
+        END;
+    END;
+    CALL PRINT$TEST(.'djnz_nest2 $', COUNT);  /* Expected: 120 (3*4*10) */
+
+END TEST$NESTED$LOOPS;
+
+TEST$CALL$IN$LOOP: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE X ADDRESS;
+
+    /* Helper to add value */
+    ADD$TEN: PROCEDURE(VAL) ADDRESS;
+        DECLARE VAL ADDRESS;
+        RETURN VAL + 10;
+    END ADD$TEN;
+
+    /* Loop with procedure call - may clobber B */
+    X = 0;
+    DO I = 0 TO 4;
+        X = ADD$TEN(X);
+    END;
+    CALL PRINT$TEST(.'djnz_call1 $', X);  /* Expected: 50 */
+
+END TEST$CALL$IN$LOOP;
+
+TEST$VARIABLE$BOUND: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE COUNT ADDRESS;
+    DECLARE LIMIT BYTE;
+
+    /* Variable upper bound */
+    LIMIT = 5;
+    COUNT = 0;
+    DO I = 0 TO LIMIT;  /* 6 iterations (0,1,2,3,4,5) */
+        COUNT = COUNT + 1;
+    END;
+    CALL PRINT$TEST(.'djnz_var1 $', COUNT);  /* Expected: 6 */
+
+    /* Variable bound with operations in body */
+    LIMIT = 3;
+    COUNT = 0;
+    DO I = 0 TO LIMIT;
+        COUNT = COUNT + 100;
+    END;
+    CALL PRINT$TEST(.'djnz_var2 $', COUNT);  /* Expected: 400 */
+
+END TEST$VARIABLE$BOUND;
+
+TEST$EDGE$CASES: PROCEDURE;
+    DECLARE I BYTE;
+    DECLARE COUNT ADDRESS;
+
+    /* Single iteration */
+    COUNT = 0;
+    DO I = 0 TO 0;
+        COUNT = COUNT + 1;
+    END;
+    CALL PRINT$TEST(.'djnz_e1 $', COUNT);  /* Expected: 1 */
+
+    /* Maximum BYTE iterations (255) */
+    COUNT = 0;
+    DO I = 0 TO 254;  /* 255 iterations */
+        COUNT = COUNT + 1;
+    END;
+    CALL PRINT$TEST(.'djnz_e2 $', COUNT);  /* Expected: 255 */
+
+END TEST$EDGE$CASES;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'DJNZ Loop Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SIMPLE$DJNZ;
+    CALL TEST$ADD$IN$LOOP;
+    CALL TEST$MUL$IN$LOOP;
+    CALL TEST$DIV$IN$LOOP;
+    CALL TEST$NESTED$LOOPS;
+    CALL TEST$CALL$IN$LOOP;
+    CALL TEST$VARIABLE$BOUND;
+    CALL TEST$EDGE$CASES;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$DJNZ$LOOPS;
+
+EOF

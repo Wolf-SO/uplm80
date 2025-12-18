@@ -1,0 +1,248 @@
+/*
+ * TEST: BYTE SHIFT/ROTATE OPERATIONS (Bug 1 regression test)
+ *
+ * Tests that SHR, SHL, ROL, ROR, SCL, SCR work correctly with BYTE operands.
+ * Bug 1: These operations assumed value was in HL, but BYTE values are in A.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_byte_shifts.plm -o tests/test_byte_shifts.mac
+ *   um80 tests/test_byte_shifts.mac
+ *   ul80 -o tests/test_byte_shifts.com tests/test_byte_shifts.rel
+ *   cpmemu tests/test_byte_shifts.com
+ */
+
+0100H:
+
+TEST$BYTE$SHIFTS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * BYTE SHIFT TESTS
+ * ================================================================ */
+
+TEST$SHR$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* SHR with BYTE variable */
+    X = 5AH;  /* 01011010 */
+    Y = SHR(X, 4);
+    CALL PRINT$TEST(.'shr_b1 $', Y);  /* Expected: 5 (00000101) */
+
+    X = 0FFH;
+    Y = SHR(X, 1);
+    CALL PRINT$TEST(.'shr_b2 $', Y);  /* Expected: 127 (01111111) */
+
+    X = 80H;
+    Y = SHR(X, 7);
+    CALL PRINT$TEST(.'shr_b3 $', Y);  /* Expected: 1 */
+
+    /* SHR with BYTE literal */
+    Y = SHR(0AAH, 4);
+    CALL PRINT$TEST(.'shr_b4 $', Y);  /* Expected: 10 (00001010) */
+
+    /* Variable shift count */
+    X = 80H;
+    Y = 3;
+    CALL PRINT$TEST(.'shr_b5 $', SHR(X, Y));  /* Expected: 16 */
+
+END TEST$SHR$BYTE;
+
+TEST$SHL$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* SHL with BYTE variable */
+    X = 05H;
+    Y = SHL(X, 4);
+    CALL PRINT$TEST(.'shl_b1 $', Y);  /* Expected: 80 (01010000) */
+
+    X = 01H;
+    Y = SHL(X, 7);
+    CALL PRINT$TEST(.'shl_b2 $', Y);  /* Expected: 128 */
+
+    X = 0AAH;  /* 10101010 */
+    Y = SHL(X, 1);
+    CALL PRINT$TEST(.'shl_b3 $', Y);  /* Expected: 84 (low byte of 101010100) */
+
+    /* Variable shift count */
+    X = 1;
+    Y = 5;
+    CALL PRINT$TEST(.'shl_b4 $', SHL(X, Y));  /* Expected: 32 */
+
+END TEST$SHL$BYTE;
+
+TEST$ROL$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* ROL - rotate left */
+    X = 80H;  /* 10000000 */
+    Y = ROL(X, 1);
+    CALL PRINT$TEST(.'rol_b1 $', Y);  /* Expected: 1 (00000001) - bit wraps */
+
+    X = 0AAH;  /* 10101010 */
+    Y = ROL(X, 1);
+    CALL PRINT$TEST(.'rol_b2 $', Y);  /* Expected: 85 (01010101) */
+
+    X = 0AAH;
+    Y = ROL(X, 4);
+    CALL PRINT$TEST(.'rol_b3 $', Y);  /* Expected: 170 (same pattern rotated 4) */
+
+    /* Variable rotation */
+    X = 01H;
+    Y = 4;
+    CALL PRINT$TEST(.'rol_b4 $', ROL(X, Y));  /* Expected: 16 */
+
+END TEST$ROL$BYTE;
+
+TEST$ROR$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* ROR - rotate right */
+    X = 01H;  /* 00000001 */
+    Y = ROR(X, 1);
+    CALL PRINT$TEST(.'ror_b1 $', Y);  /* Expected: 128 (10000000) - bit wraps */
+
+    X = 0AAH;  /* 10101010 */
+    Y = ROR(X, 1);
+    CALL PRINT$TEST(.'ror_b2 $', Y);  /* Expected: 85 (01010101) */
+
+    X = 0AAH;
+    Y = ROR(X, 4);
+    CALL PRINT$TEST(.'ror_b3 $', Y);  /* Expected: 170 (same pattern rotated 4) */
+
+    /* Variable rotation */
+    X = 80H;
+    Y = 4;
+    CALL PRINT$TEST(.'ror_b4 $', ROR(X, Y));  /* Expected: 8 */
+
+END TEST$ROR$BYTE;
+
+TEST$SCL$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* SCL - shift left through carry */
+    X = 80H;  /* 10000000 */
+    Y = SCL(X, 1);
+    CALL PRINT$TEST(.'scl_b1 $', Y);  /* Expected: 0 or 1 depending on initial carry */
+
+    X = 40H;  /* 01000000 */
+    Y = SCL(X, 1);
+    CALL PRINT$TEST(.'scl_b2 $', Y);  /* Expected: 128 */
+
+    X = 0AAH;  /* 10101010 */
+    Y = SCL(X, 2);
+    CALL PRINT$TEST(.'scl_b3 $', Y);  /* Expected: 168 (10101000) */
+
+END TEST$SCL$BYTE;
+
+TEST$SCR$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+
+    /* SCR - shift right through carry */
+    X = 01H;  /* 00000001 */
+    Y = SCR(X, 1);
+    CALL PRINT$TEST(.'scr_b1 $', Y);  /* Expected: 0 or 128 depending on initial carry */
+
+    X = 02H;  /* 00000010 */
+    Y = SCR(X, 1);
+    CALL PRINT$TEST(.'scr_b2 $', Y);  /* Expected: 1 */
+
+    X = 0AAH;  /* 10101010 */
+    Y = SCR(X, 2);
+    CALL PRINT$TEST(.'scr_b3 $', Y);  /* Expected: 42 (00101010) */
+
+END TEST$SCR$BYTE;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'BYTE Shift/Rotate Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'======================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SHR$BYTE;
+    CALL TEST$SHL$BYTE;
+    CALL TEST$ROL$BYTE;
+    CALL TEST$ROR$BYTE;
+    CALL TEST$SCL$BYTE;
+    CALL TEST$SCR$BYTE;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$BYTE$SHIFTS;
+
+EOF
