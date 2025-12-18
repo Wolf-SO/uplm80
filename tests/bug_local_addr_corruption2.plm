@@ -1,0 +1,181 @@
+/*
+ * Bug: Local ADDRESS variables corrupted after deeply nested procedure call
+ *
+ * This test mirrors the structure in EXTRACT$LBR where local ADDRESS
+ * variables (ENTRY$NUM, MAX$ENTRIES) are corrupted after calling UNSQUEEZE.
+ *
+ * Key factors that may trigger the bug:
+ * - Local array (SAVED$FCB) declared in same procedure
+ * - Deep nesting of DO WHILE and IF/ELSE blocks
+ * - Procedure call within deeply nested block
+ *
+ * Expected output: PASS
+ * Actual output:   FAIL if bug is present
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+CRLF: PROCEDURE;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END CRLF;
+
+/* Global buffer to simulate INBUF */
+DECLARE GBUF$PTR ADDRESS;
+DECLARE GBUF BASED GBUF$PTR (256) BYTE;
+
+/* Simulate UNSQUEEZE - does significant work */
+UNSQUEEZE: PROCEDURE BYTE;
+    DECLARE (I, B) BYTE;
+    DECLARE (NODE, P) ADDRESS;
+    DECLARE DONE BYTE;
+
+    /* Simulate reading bytes and doing Huffman decoding */
+    I = 0;
+    DO WHILE I < 50;
+        B = GBUF(I);
+        NODE = 0;
+        DO WHILE NODE < 10;
+            P = NODE;
+            NODE = NODE + 1;
+        END;
+        I = I + 1;
+    END;
+
+    CALL PRINTCHAR('U');
+    RETURN 1;
+END UNSQUEEZE;
+
+/* This mirrors EXTRACT$LBR structure */
+EXTRACT$LBR: PROCEDURE BYTE;
+    DECLARE RESULT BYTE;
+    DECLARE DIR$SECTORS BYTE;
+    DECLARE ENTRY$NUM ADDRESS;
+    DECLARE MAX$ENTRIES ADDRESS;
+    DECLARE SECTORS$LEFT ADDRESS;
+    DECLARE MEMBER$INDEX ADDRESS;
+    DECLARE MEMBER$LENGTH ADDRESS;
+
+    /* Local array - this may affect stack layout */
+    DECLARE SAVED$FCB (36) BYTE;
+
+    /* Pointer for entry access */
+    DECLARE ENT$PTR ADDRESS;
+    DECLARE ENT BASED ENT$PTR (32) BYTE;
+
+    /* Initialize */
+    DIR$SECTORS = 1;
+    MAX$ENTRIES = 4;  /* SHL(1, 2) */
+    ENTRY$NUM = 1;
+
+    /* Initialize local array */
+    SAVED$FCB(0) = 'T';
+    SAVED$FCB(1) = 'E';
+    SAVED$FCB(2) = 'S';
+    SAVED$FCB(3) = 'T';
+
+    CALL PRINTCHAR('S');
+    CALL PRINTHEX(LOW(ENTRY$NUM));
+    CALL PRINTHEX(LOW(MAX$ENTRIES));
+    CALL CRLF;
+
+    /* Main loop - mirrors EXTRACT$LBR structure */
+    DO WHILE ENTRY$NUM < MAX$ENTRIES;
+        ENT$PTR = GBUF$PTR + (ENTRY$NUM * 32);
+
+        IF ENT$PTR >= GBUF$PTR + 256 THEN DO;
+            ENTRY$NUM = MAX$ENTRIES;
+        END;
+        ELSE DO;
+            IF GBUF(0) = 0FFH THEN DO;
+                ENTRY$NUM = MAX$ENTRIES;
+            END;
+            ELSE IF GBUF(0) = 0 THEN DO;
+                /* Active entry - deeply nested */
+                CALL PRINTCHAR('E');
+                CALL PRINTHEX(LOW(ENTRY$NUM));
+
+                MEMBER$INDEX = 1;
+                MEMBER$LENGTH = 10;
+
+                IF MEMBER$LENGTH <> 0 THEN DO;
+                    /* More nesting */
+                    IF 1 = 1 THEN DO;
+                        /* Even more nesting */
+                        IF 1 = 1 THEN DO;
+                            /* Call that may corrupt locals */
+                            CALL PRINTCHAR('<');
+                            CALL PRINTHEX(LOW(ENTRY$NUM));
+                            CALL PRINTHEX(LOW(MAX$ENTRIES));
+
+                            IF UNSQUEEZE THEN RESULT = 1;
+
+                            CALL PRINTCHAR('>');
+                            CALL PRINTHEX(LOW(ENTRY$NUM));
+                            CALL PRINTHEX(LOW(MAX$ENTRIES));
+                            CALL CRLF;
+
+                            /* Check for corruption */
+                            IF ENTRY$NUM <> 1 OR MAX$ENTRIES <> 4 THEN DO;
+                                CALL PRINTCHAR('!');
+                                CALL PRINTCHAR('C');
+                                CALL PRINTCHAR('O');
+                                CALL PRINTCHAR('R');
+                                CALL PRINTCHAR('R');
+                                CALL PRINTCHAR('U');
+                                CALL PRINTCHAR('P');
+                                CALL PRINTCHAR('T');
+                                CALL CRLF;
+                                RETURN 0;
+                            END;
+                        END;
+                    END;
+                END;
+
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+            ELSE DO;
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+        END;
+    END;
+
+    CALL PRINTCHAR('P');
+    CALL PRINTCHAR('A');
+    CALL PRINTCHAR('S');
+    CALL PRINTCHAR('S');
+    CALL CRLF;
+    RETURN 1;
+END EXTRACT$LBR;
+
+/* Main */
+DECLARE BUFFER (256) BYTE;
+DECLARE I BYTE;
+
+/* Initialize buffer */
+GBUF$PTR = .BUFFER;
+I = 0;
+DO WHILE I < 128;
+    BUFFER(I) = 0;
+    I = I + 1;
+END;
+
+CALL EXTRACT$LBR;
+
+EOF

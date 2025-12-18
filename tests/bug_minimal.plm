@@ -1,0 +1,125 @@
+/*
+ * MINIMAL BUG: Local ADDRESS corruption
+ *
+ * Bug triggers with:
+ * - 5+ local ADDRESS variables
+ * - Local array
+ * - BASED pointer access
+ * - Nested procedure call with loops
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+DECLARE GBUF$PTR ADDRESS;
+DECLARE GBUF BASED GBUF$PTR (256) BYTE;
+
+/* Inner with nested loops */
+INNER: PROCEDURE BYTE;
+    DECLARE (I, B) BYTE;
+    DECLARE P ADDRESS;
+    I = 0;
+    DO WHILE I < 50;
+        B = GBUF(I);
+        P = 0;
+        DO WHILE P < 10;
+            P = P + 1;
+        END;
+        I = I + 1;
+    END;
+    RETURN 1;
+END INNER;
+
+OUTER: PROCEDURE;
+    /* Many local ADDRESS variables */
+    DECLARE V1 ADDRESS;
+    DECLARE V2 ADDRESS;
+    DECLARE V3 ADDRESS;
+    DECLARE V4 ADDRESS;
+    DECLARE V5 ADDRESS;
+    /* Local array */
+    DECLARE ARR (36) BYTE;
+    /* BASED pointer */
+    DECLARE PTR ADDRESS;
+    DECLARE ENT BASED PTR (32) BYTE;
+    DECLARE RESULT BYTE;
+
+    V1 = 1;
+    V2 = 4;
+    V3 = 0;
+    V4 = 0;
+    V5 = 0;
+    ARR(0) = 'X';
+
+    CALL PRINTCHAR('<');
+    CALL PRINTHEX(LOW(V1));
+    CALL PRINTHEX(LOW(V2));
+
+    DO WHILE V1 < V2;
+        PTR = GBUF$PTR + (V1 * 32);
+        IF ENT(0) = 0 THEN DO;
+            V3 = ENT(12);
+            V4 = ENT(14);
+            IF V4 = 0 OR 1 = 1 THEN DO;
+                IF 1 = 1 THEN DO;
+                    RESULT = INNER;
+
+                    CALL PRINTCHAR('>');
+                    CALL PRINTHEX(LOW(V1));
+                    CALL PRINTHEX(LOW(V2));
+                    CALL PRINTCHAR(13);
+                    CALL PRINTCHAR(10);
+
+                    IF V1 = 1 AND V2 = 4 THEN DO;
+                        CALL PRINTCHAR('P');
+                        CALL PRINTCHAR('A');
+                        CALL PRINTCHAR('S');
+                        CALL PRINTCHAR('S');
+                    END;
+                    ELSE DO;
+                        CALL PRINTCHAR('F');
+                        CALL PRINTCHAR('A');
+                        CALL PRINTCHAR('I');
+                        CALL PRINTCHAR('L');
+                    END;
+                    CALL PRINTCHAR(13);
+                    CALL PRINTCHAR(10);
+                    RETURN;
+                END;
+            END;
+            V1 = V1 + 1;
+        END;
+        ELSE DO;
+            V1 = V1 + 1;
+        END;
+    END;
+END OUTER;
+
+DECLARE BUFFER (256) BYTE;
+DECLARE I BYTE;
+
+GBUF$PTR = .BUFFER;
+I = 0;
+DO WHILE I < 128;
+    BUFFER(I) = 0;
+    I = I + 1;
+END;
+
+CALL OUTER;
+
+EOF
