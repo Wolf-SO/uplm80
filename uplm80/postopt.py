@@ -725,13 +725,15 @@ def optimize_asm(asm_code: str, verbose: bool = False) -> tuple[str, int]:
             if selected:
                 if verbose:
                     print(f"  Pass {pass_num}: Found {len(selected)} tail merge groups")
-                for tail, group in selected:
-                    # Apply tail merge for this group
-                    lines, savings = optimize_tail_merge(lines, procs, {tail: group}, verbose=verbose)
-                    pass_savings += savings
-
-                    # Re-parse procs since lines changed
-                    procs = parse_procedures(lines)
+                # Only process ONE group per pass. The `selected` list contains
+                # Procedure objects with line numbers from the current `procs`.
+                # After optimize_tail_merge modifies `lines`, subsequent groups
+                # in `selected` have stale line numbers pointing to wrong lines.
+                # Processing one group per pass ensures line numbers are fresh.
+                tail, group = selected[0]
+                lines, savings = optimize_tail_merge(lines, procs, {tail: group}, verbose=verbose)
+                pass_savings += savings
+                procs = parse_procedures(lines)
 
         # Apply skip trick (can create new opportunities after tail merge)
         skip_opps = find_skip_opportunities(lines)
