@@ -1,0 +1,258 @@
+/*
+ * TEST: DATA DECLARATIONS (Bug 4 test)
+ *
+ * Tests DATA declarations at both module level and procedure level.
+ *
+ * Bug 4: DATA declarations at module level cause incorrect address
+ * calculations. Strings and data tables end up at wrong addresses.
+ *
+ * Current workaround: Place all DATA declarations inside procedures.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_data_decl.plm -o tests/test_data_decl.mac
+ *   um80 tests/test_data_decl.mac
+ *   ul80 -o tests/test_data_decl.com tests/test_data_decl.rel
+ *   cpmemu tests/test_data_decl.com
+ */
+
+0100H:
+
+TEST$DATA$DECL:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * MODULE-LEVEL DATA DECLARATIONS (Bug 4 area)
+ *
+ * Note: These are placed at module level to test Bug 4.
+ * If Bug 4 is not fixed, these may have wrong addresses.
+ * ================================================================ */
+
+/* Module-level DATA - string */
+DECLARE MOD$STR DATA ('MODULE$', 0);
+
+/* Module-level DATA - byte array */
+DECLARE MOD$BYTES DATA (10, 20, 30, 40, 50);
+
+/* Module-level DATA - mixed */
+DECLARE MOD$MIXED DATA ('AB', 100, 200);
+
+/* Module-level INITIAL (different from DATA) */
+DECLARE MOD$INIT(5) BYTE INITIAL (11, 22, 33, 44, 55);
+
+/* ================================================================
+ * TESTS FOR PROCEDURE-LEVEL DATA (KNOWN TO WORK)
+ * ================================================================ */
+
+TEST$PROC$DATA: PROCEDURE;
+    DECLARE PTR ADDRESS;
+    DECLARE B BASED PTR BYTE;
+    DECLARE I BYTE;
+
+    /* Procedure-level DATA - string */
+    DECLARE PROC$STR DATA ('PROC$', 0);
+
+    /* Procedure-level DATA - bytes */
+    DECLARE PROC$BYTES DATA (1, 2, 3, 4, 5);
+
+    /* Test string first byte */
+    PTR = .PROC$STR;
+    CALL PRINT$TEST(.'proc_str0 $', B);  /* Expected: 80 ('P') */
+
+    PTR = PTR + 1;
+    CALL PRINT$TEST(.'proc_str1 $', B);  /* Expected: 82 ('R') */
+
+    /* Test bytes */
+    PTR = .PROC$BYTES;
+    CALL PRINT$TEST(.'proc_b0 $', B);    /* Expected: 1 */
+
+    PTR = PTR + 2;
+    CALL PRINT$TEST(.'proc_b2 $', B);    /* Expected: 3 */
+
+    PTR = .PROC$BYTES + 4;
+    CALL PRINT$TEST(.'proc_b4 $', B);    /* Expected: 5 */
+
+END TEST$PROC$DATA;
+
+/* ================================================================
+ * TESTS FOR MODULE-LEVEL DATA (Bug 4 area)
+ * ================================================================ */
+
+TEST$MOD$DATA: PROCEDURE;
+    DECLARE PTR ADDRESS;
+    DECLARE B BASED PTR BYTE;
+
+    /* Test module-level string - may fail due to Bug 4 */
+    PTR = .MOD$STR;
+    CALL PRINT$TEST(.'mod_str0 $', B);   /* Expected: 77 ('M') */
+
+    PTR = PTR + 1;
+    CALL PRINT$TEST(.'mod_str1 $', B);   /* Expected: 79 ('O') */
+
+    /* Test module-level bytes */
+    PTR = .MOD$BYTES;
+    CALL PRINT$TEST(.'mod_b0 $', B);     /* Expected: 10 */
+
+    PTR = .MOD$BYTES + 2;
+    CALL PRINT$TEST(.'mod_b2 $', B);     /* Expected: 30 */
+
+    PTR = .MOD$BYTES + 4;
+    CALL PRINT$TEST(.'mod_b4 $', B);     /* Expected: 50 */
+
+    /* Test module-level mixed */
+    PTR = .MOD$MIXED;
+    CALL PRINT$TEST(.'mod_mix0 $', B);   /* Expected: 65 ('A') */
+
+    PTR = .MOD$MIXED + 2;
+    CALL PRINT$TEST(.'mod_mix2 $', B);   /* Expected: 100 */
+
+    /* Test module-level INITIAL */
+    CALL PRINT$TEST(.'mod_init0 $', MOD$INIT(0));  /* Expected: 11 */
+    CALL PRINT$TEST(.'mod_init2 $', MOD$INIT(2));  /* Expected: 33 */
+    CALL PRINT$TEST(.'mod_init4 $', MOD$INIT(4));  /* Expected: 55 */
+
+END TEST$MOD$DATA;
+
+/* ================================================================
+ * TESTS FOR DATA WITH SPECIAL VALUES
+ * ================================================================ */
+
+TEST$SPECIAL$DATA: PROCEDURE;
+    DECLARE PTR ADDRESS;
+    DECLARE B BASED PTR BYTE;
+    DECLARE W BASED PTR ADDRESS;
+
+    /* DATA with zero bytes */
+    DECLARE ZEROS DATA (0, 0, 0);
+    PTR = .ZEROS;
+    CALL PRINT$TEST(.'zero0 $', B);      /* Expected: 0 */
+    PTR = PTR + 1;
+    CALL PRINT$TEST(.'zero1 $', B);      /* Expected: 0 */
+
+    /* DATA with max byte value */
+    DECLARE MAXBYTES DATA (255, 254, 253);
+    PTR = .MAXBYTES;
+    CALL PRINT$TEST(.'max0 $', B);       /* Expected: 255 */
+    PTR = PTR + 2;
+    CALL PRINT$TEST(.'max2 $', B);       /* Expected: 253 */
+
+    /* DATA with string containing special chars */
+    DECLARE SPECIAL DATA (CR, LF, '$');
+    PTR = .SPECIAL;
+    CALL PRINT$TEST(.'spec0 $', B);      /* Expected: 13 (CR) */
+    PTR = PTR + 1;
+    CALL PRINT$TEST(.'spec1 $', B);      /* Expected: 10 (LF) */
+
+END TEST$SPECIAL$DATA;
+
+/* ================================================================
+ * TESTS FOR ADDRESS OF DATA IN EXPRESSIONS
+ * ================================================================ */
+
+TEST$DATA$ADDR: PROCEDURE;
+    DECLARE PTR ADDRESS;
+    DECLARE B BASED PTR BYTE;
+
+    /* DATA accessed via address arithmetic */
+    DECLARE TABLE DATA (100, 101, 102, 103, 104);
+    DECLARE INDEX BYTE;
+
+    INDEX = 0;
+    PTR = .TABLE + INDEX;
+    CALL PRINT$TEST(.'tbl_i0 $', B);     /* Expected: 100 */
+
+    INDEX = 2;
+    PTR = .TABLE + INDEX;
+    CALL PRINT$TEST(.'tbl_i2 $', B);     /* Expected: 102 */
+
+    INDEX = 4;
+    PTR = .TABLE + INDEX;
+    CALL PRINT$TEST(.'tbl_i4 $', B);     /* Expected: 104 */
+
+END TEST$DATA$ADDR;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'DATA Declaration Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'======================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$PROC$DATA;
+    CALL TEST$MOD$DATA;
+    CALL TEST$SPECIAL$DATA;
+    CALL TEST$DATA$ADDR;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$DATA$DECL;
+
+EOF

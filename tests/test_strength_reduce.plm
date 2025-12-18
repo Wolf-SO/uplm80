@@ -1,0 +1,315 @@
+/*
+ * TEST: STRENGTH REDUCTION OPTIMIZATIONS
+ *
+ * Tests that the compiler correctly optimizes:
+ * - Multiplication by power of 2 -> shift left
+ * - Division by power of 2 -> shift right
+ * - Modulo by power of 2 -> AND with (2^n - 1)
+ *
+ * From todo.txt: "if you had a 16bit address variable and did
+ * foo = foo / 2 it would do a shr and do it wrong"
+ *
+ * This tests various combinations of types and powers of 2.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_strength_reduce.plm -o tests/test_strength_reduce.mac
+ *   um80 tests/test_strength_reduce.mac
+ *   ul80 -o tests/test_strength_reduce.com tests/test_strength_reduce.rel
+ *   cpmemu tests/test_strength_reduce.com
+ */
+
+0100H:
+
+TEST$STRENGTH$REDUCE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * DIVISION BY POWER OF 2 TESTS
+ * These get optimized to SHR (shift right)
+ * ================================================================ */
+
+TEST$DIV$POWER2: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE X BYTE;
+
+    /* ADDRESS division by powers of 2 */
+    A = 1000;
+    CALL PRINT$TEST(.'div2_a1 $', A / 2);     /* Expected: 500 */
+    CALL PRINT$TEST(.'div4_a1 $', A / 4);     /* Expected: 250 */
+    CALL PRINT$TEST(.'div8_a1 $', A / 8);     /* Expected: 125 */
+    CALL PRINT$TEST(.'div16_a1 $', A / 16);   /* Expected: 62 */
+
+    /* Large ADDRESS value */
+    A = 40000;
+    CALL PRINT$TEST(.'div2_a2 $', A / 2);     /* Expected: 20000 */
+    CALL PRINT$TEST(.'div4_a2 $', A / 4);     /* Expected: 10000 */
+    CALL PRINT$TEST(.'div8_a2 $', A / 8);     /* Expected: 5000 */
+
+    /* Self-assignment (the case mentioned in todo.txt) */
+    A = 1024;
+    A = A / 2;
+    CALL PRINT$TEST(.'div2_self $', A);       /* Expected: 512 */
+
+    A = 1024;
+    A = A / 4;
+    CALL PRINT$TEST(.'div4_self $', A);       /* Expected: 256 */
+
+    A = 1024;
+    A = A / 8;
+    CALL PRINT$TEST(.'div8_self $', A);       /* Expected: 128 */
+
+    /* BYTE division by powers of 2 */
+    X = 200;
+    CALL PRINT$TEST(.'div2_b1 $', X / 2);     /* Expected: 100 */
+    CALL PRINT$TEST(.'div4_b1 $', X / 4);     /* Expected: 50 */
+    CALL PRINT$TEST(.'div8_b1 $', X / 8);     /* Expected: 25 */
+
+    /* BYTE self-assignment */
+    X = 128;
+    X = X / 2;
+    CALL PRINT$TEST(.'div2_bself $', X);      /* Expected: 64 */
+
+    /* Edge cases */
+    A = 1;
+    CALL PRINT$TEST(.'div2_edge1 $', A / 2);  /* Expected: 0 */
+
+    A = 3;
+    CALL PRINT$TEST(.'div2_edge2 $', A / 2);  /* Expected: 1 */
+
+    A = 7;
+    CALL PRINT$TEST(.'div4_edge $', A / 4);   /* Expected: 1 */
+
+END TEST$DIV$POWER2;
+
+/* ================================================================
+ * MULTIPLICATION BY POWER OF 2 TESTS
+ * These get optimized to SHL (shift left) or x+x for *2
+ * ================================================================ */
+
+TEST$MUL$POWER2: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE X BYTE;
+
+    /* ADDRESS multiplication by powers of 2 */
+    A = 100;
+    CALL PRINT$TEST(.'mul2_a1 $', A * 2);     /* Expected: 200 */
+    CALL PRINT$TEST(.'mul4_a1 $', A * 4);     /* Expected: 400 */
+    CALL PRINT$TEST(.'mul8_a1 $', A * 8);     /* Expected: 800 */
+    CALL PRINT$TEST(.'mul16_a1 $', A * 16);   /* Expected: 1600 */
+
+    /* Self-assignment */
+    A = 50;
+    A = A * 2;
+    CALL PRINT$TEST(.'mul2_self $', A);       /* Expected: 100 */
+
+    A = 50;
+    A = A * 4;
+    CALL PRINT$TEST(.'mul4_self $', A);       /* Expected: 200 */
+
+    A = 50;
+    A = A * 8;
+    CALL PRINT$TEST(.'mul8_self $', A);       /* Expected: 400 */
+
+    /* BYTE multiplication by powers of 2 */
+    X = 10;
+    CALL PRINT$TEST(.'mul2_b1 $', X * 2);     /* Expected: 20 */
+    CALL PRINT$TEST(.'mul4_b1 $', X * 4);     /* Expected: 40 */
+    CALL PRINT$TEST(.'mul8_b1 $', X * 8);     /* Expected: 80 */
+
+    /* Overflow cases - results wrap in 16 bits */
+    A = 10000;
+    CALL PRINT$TEST(.'mul8_over $', A * 8);   /* Expected: 14464 (80000 mod 65536) */
+
+    /* BYTE to ADDRESS promotion */
+    X = 100;
+    A = X * 256;
+    CALL PRINT$TEST(.'mul256_b $', A);        /* Expected: 25600 */
+
+END TEST$MUL$POWER2;
+
+/* ================================================================
+ * MODULO BY POWER OF 2 TESTS
+ * These get optimized to AND with (2^n - 1)
+ * ================================================================ */
+
+TEST$MOD$POWER2: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE X BYTE;
+
+    /* ADDRESS modulo by powers of 2 */
+    A = 1000;
+    CALL PRINT$TEST(.'mod2_a1 $', A MOD 2);   /* Expected: 0 */
+    CALL PRINT$TEST(.'mod4_a1 $', A MOD 4);   /* Expected: 0 */
+    CALL PRINT$TEST(.'mod8_a1 $', A MOD 8);   /* Expected: 0 */
+    CALL PRINT$TEST(.'mod16_a1 $', A MOD 16); /* Expected: 8 */
+
+    A = 1023;
+    CALL PRINT$TEST(.'mod2_a2 $', A MOD 2);   /* Expected: 1 */
+    CALL PRINT$TEST(.'mod4_a2 $', A MOD 4);   /* Expected: 3 */
+    CALL PRINT$TEST(.'mod8_a2 $', A MOD 8);   /* Expected: 7 */
+    CALL PRINT$TEST(.'mod16_a2 $', A MOD 16); /* Expected: 15 */
+
+    /* Self-assignment */
+    A = 12345;
+    A = A MOD 16;
+    CALL PRINT$TEST(.'mod16_self $', A);      /* Expected: 9 */
+
+    /* BYTE modulo by powers of 2 */
+    X = 255;
+    CALL PRINT$TEST(.'mod2_b1 $', X MOD 2);   /* Expected: 1 */
+    CALL PRINT$TEST(.'mod4_b1 $', X MOD 4);   /* Expected: 3 */
+    CALL PRINT$TEST(.'mod8_b1 $', X MOD 8);   /* Expected: 7 */
+    CALL PRINT$TEST(.'mod16_b1 $', X MOD 16); /* Expected: 15 */
+
+    /* Edge case: value already less than divisor */
+    A = 5;
+    CALL PRINT$TEST(.'mod16_edge $', A MOD 16); /* Expected: 5 */
+
+END TEST$MOD$POWER2;
+
+/* ================================================================
+ * COMBINED OPERATIONS
+ * ================================================================ */
+
+TEST$COMBINED: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE X BYTE;
+
+    /* Division and multiplication in same expression */
+    A = 1000;
+    CALL PRINT$TEST(.'comb1 $', (A / 4) * 2);   /* Expected: 500 */
+
+    /* Multiple divisions */
+    A = 1024;
+    A = A / 2;
+    A = A / 2;
+    A = A / 2;
+    CALL PRINT$TEST(.'comb2 $', A);             /* Expected: 128 */
+
+    /* Division and modulo */
+    A = 100;
+    CALL PRINT$TEST(.'comb3 $', (A / 8) + (A MOD 8)); /* Expected: 12+4 = 16 */
+
+    /* Chained operations */
+    A = 50;
+    A = A * 2;
+    A = A / 4;
+    A = A * 8;
+    CALL PRINT$TEST(.'comb4 $', A);             /* Expected: 200 */
+
+END TEST$COMBINED;
+
+/* ================================================================
+ * NON-POWER-OF-2 (SHOULD NOT BE OPTIMIZED)
+ * These should still work correctly
+ * ================================================================ */
+
+TEST$NON$POWER2: PROCEDURE;
+    DECLARE A ADDRESS;
+
+    /* Division by non-power-of-2 */
+    A = 1000;
+    CALL PRINT$TEST(.'div3 $', A / 3);          /* Expected: 333 */
+    CALL PRINT$TEST(.'div5 $', A / 5);          /* Expected: 200 */
+    CALL PRINT$TEST(.'div7 $', A / 7);          /* Expected: 142 */
+
+    /* Multiplication by non-power-of-2 */
+    A = 100;
+    CALL PRINT$TEST(.'mul3 $', A * 3);          /* Expected: 300 */
+    CALL PRINT$TEST(.'mul5 $', A * 5);          /* Expected: 500 */
+    CALL PRINT$TEST(.'mul7 $', A * 7);          /* Expected: 700 */
+
+    /* Modulo by non-power-of-2 */
+    A = 1000;
+    CALL PRINT$TEST(.'mod3 $', A MOD 3);        /* Expected: 1 */
+    CALL PRINT$TEST(.'mod7 $', A MOD 7);        /* Expected: 6 */
+
+END TEST$NON$POWER2;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Strength Reduction Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'========================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$DIV$POWER2;
+    CALL TEST$MUL$POWER2;
+    CALL TEST$MOD$POWER2;
+    CALL TEST$COMBINED;
+    CALL TEST$NON$POWER2;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$STRENGTH$REDUCE;
+
+EOF
