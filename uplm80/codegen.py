@@ -2229,31 +2229,30 @@ class CodeGenerator:
             self._emit("JZ", true_label)
 
     def _emit_jump_on_true_16bit(self, op: BinaryOp, true_label: str) -> None:
-        """Emit jump to true_label for 16-bit comparison."""
+        """Emit jump to true_label for 16-bit unsigned comparison.
+
+        After CALL ??SUBDE (SBC HL,DE), carry flag is set if HL < DE (borrow).
+        """
         if op == BinaryOp.LT:
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", true_label)
+            # left < right: true if carry set
+            self._emit("JC", true_label)
         elif op == BinaryOp.GE:
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JP", true_label)
+            # left >= right: true if no carry
+            self._emit("JNC", true_label)
         elif op == BinaryOp.GT:
+            # left > right: true if no carry AND result != 0
             skip = self._new_label("SKIP")
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", skip)
+            self._emit("JC", skip)  # left < right -> not greater, skip
             self._emit("MOV", "A,L")
             self._emit("ORA", "H")
-            self._emit("JNZ", true_label)
+            self._emit("JNZ", true_label)  # not equal -> greater
             self._emit_label(skip)
         elif op == BinaryOp.LE:
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", true_label)
+            # left <= right: true if carry OR result == 0
+            self._emit("JC", true_label)  # left < right -> true
             self._emit("MOV", "A,L")
             self._emit("ORA", "H")
-            self._emit("JZ", true_label)
+            self._emit("JZ", true_label)  # left == right -> true
 
     def _emit_jump_on_false(self, op: BinaryOp, false_label: str) -> None:
         """Emit jump to false_label if comparison result is false (8-bit compare)."""
@@ -2280,39 +2279,35 @@ class CodeGenerator:
             self._emit_label(skip)
 
     def _emit_jump_on_false_16bit(self, op: BinaryOp, false_label: str) -> None:
-        """Emit jump to false_label for 16-bit comparison (signed)."""
-        # After 16-bit subtract HL = left - right, H contains high byte
-        # For unsigned comparison, check carry from subtraction
-        # But we already did the subtract inline, so check sign
+        """Emit jump to false_label for 16-bit unsigned comparison.
+
+        After CALL ??SUBDE (SBC HL,DE), carry flag is set if HL < DE (borrow).
+        PL/M ADDRESS is unsigned, so we use carry-based comparisons.
+        """
         if op == BinaryOp.LT:
-            # left < right: result negative (high bit set)
-            # Check if high byte is negative
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JP", false_label)  # Jump if positive (sign=0)
+            # left < right: true if carry set (borrow occurred)
+            # Jump to false if NO carry (left >= right)
+            self._emit("JNC", false_label)
         elif op == BinaryOp.GE:
-            # left >= right: result non-negative
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", false_label)  # Jump if negative (sign=1)
+            # left >= right: true if no carry
+            # Jump to false if carry set (left < right)
+            self._emit("JC", false_label)
         elif op == BinaryOp.GT:
-            # left > right: result positive and non-zero
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", false_label)  # Jump if negative
+            # left > right: true if no carry AND result != 0
+            # Jump to false if carry OR result == 0
+            self._emit("JC", false_label)  # left < right -> false
             self._emit("MOV", "A,L")
             self._emit("ORA", "H")
-            self._emit("JZ", false_label)  # Jump if zero
+            self._emit("JZ", false_label)  # left == right -> false
         elif op == BinaryOp.LE:
-            # left <= right: result negative or zero
+            # left <= right: true if carry OR result == 0
+            # Jump to false if no carry AND result != 0
             skip = self._new_label("SKIP")
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "A")
-            self._emit("JM", skip)  # Negative -> true
+            self._emit("JC", skip)  # left < right -> true, skip to end
             self._emit("MOV", "A,L")
             self._emit("ORA", "H")
-            self._emit("JZ", skip)  # Zero -> true
-            self._emit("JMP", false_label)  # Positive non-zero -> false
+            self._emit("JZ", skip)  # left == right -> true
+            self._emit("JMP", false_label)  # left > right -> false
             self._emit_label(skip)
 
     def _gen_do_block(self, stmt: DoBlock) -> None:
@@ -2522,10 +2517,12 @@ class CodeGenerator:
 
             # Only proceed with B-counter loop if we set up B
             if isinstance(stmt.bound, NumberLiteral) and stmt.bound.value + 1 <= 255:
-                # Loop body
+                # Loop body - save B since body may clobber it
                 self._emit_label(loop_label)
+                self._emit("PUSH", "B")
                 for s in stmt.stmts:
                     self._gen_stmt(s)
+                self._emit("POP", "B")
 
                 # Decrement B and jump if not zero
                 # Use DCR B; JNZ instead of DJNZ - peephole will convert to DJNZ if in range
@@ -2544,10 +2541,12 @@ class CodeGenerator:
                 self._emit("ORA", "A")
                 self._emit("JZ", end_label)  # Skip if iteration count is 0
 
-                # Loop body
+                # Loop body - save B since body may clobber it
                 self._emit_label(loop_label)
+                self._emit("PUSH", "B")
                 for s in stmt.stmts:
                     self._gen_stmt(s)
+                self._emit("POP", "B")
 
                 # Decrement B and jump if not zero
                 # Use DCR B; JNZ instead of DJNZ - peephole will convert to DJNZ if in range
@@ -2667,16 +2666,17 @@ class CodeGenerator:
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Test condition: compare index with bound variable
+            # Evaluate bound first, then compare with index
             self._emit_label(test_label)
-            self._gen_load(stmt.index_var)  # A = index
-            self._emit("MOV", "B,A")  # B = index
-            bound_result = self._gen_expr(stmt.bound)  # A = bound
+            bound_result = self._gen_expr(stmt.bound)  # A = bound (or HL if ADDRESS)
             if bound_result == DataType.ADDRESS:
                 self._emit("MOV", "A,L")  # Get low byte if ADDRESS
-            # CP B computes A - B (bound - index) without storing:
-            # NC (no carry) if bound >= index (i.e., index <= bound)
-            self._emit("CP", "B")  # Compare bound with index
-            self._emit("JR", f"NC,{loop_label}")  # Continue if bound >= index
+            self._emit("INR", "A")  # A = bound + 1
+            self._emit("MOV", "B,A")  # B = bound + 1
+            self._gen_load(stmt.index_var)  # A = index
+            # CP B computes A - B (index - (bound+1)), sets C if index < bound+1
+            self._emit("CP", "B")  # Compare index with bound+1
+            self._emit("JR", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -3813,11 +3813,13 @@ class CodeGenerator:
         elif op == BinaryOp.GT:
             # left > right: no borrow AND not equal
             self._emit("JC", end_label)  # If left < right, false
-            self._emit("ORA", "B")
+            self._emit("MOV", "A,L")
+            self._emit("ORA", "H")
             self._emit("JNZ", true_label)  # If not equal, left > right
         elif op == BinaryOp.LE:
             self._emit("JC", true_label)  # left < right
-            self._emit("ORA", "B")
+            self._emit("MOV", "A,L")
+            self._emit("ORA", "H")
             self._emit("JZ", true_label)  # left == right
 
         # False case - return 0 in A
@@ -4508,7 +4510,11 @@ class CodeGenerator:
                     pass
 
             if shift_count is not None and 0 <= shift_count <= 15:
-                self._gen_expr(args[0])  # Value in HL
+                arg_type = self._gen_expr(args[0])  # Value in HL (or A if BYTE)
+                if arg_type == DataType.BYTE:
+                    # BYTE value is in A, move to HL
+                    self._emit("MOV", "L,A")
+                    self._emit("MVI", "H,0")
 
                 if shift_count == 0:
                     pass  # No shift needed
@@ -4537,7 +4543,11 @@ class CodeGenerator:
                 return DataType.ADDRESS
 
             # Variable shift - use loop
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")  # Count in C
@@ -4565,7 +4575,11 @@ class CodeGenerator:
                     pass
 
             if shift_count is not None and 0 <= shift_count <= 15:
-                self._gen_expr(args[0])  # Value in HL
+                arg_type = self._gen_expr(args[0])  # Value in HL (or A if BYTE)
+                if arg_type == DataType.BYTE:
+                    # BYTE value is in A, move to HL
+                    self._emit("MOV", "L,A")
+                    self._emit("MVI", "H,0")
 
                 if shift_count == 0:
                     pass  # No shift needed
@@ -4633,7 +4647,11 @@ class CodeGenerator:
                 return DataType.ADDRESS
 
             # Variable shift - use loop
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")
@@ -4655,7 +4673,11 @@ class CodeGenerator:
             return DataType.ADDRESS
 
         if name == "ROL":
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")
@@ -4674,7 +4696,11 @@ class CodeGenerator:
             return DataType.BYTE
 
         if name == "ROR":
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")
@@ -4815,7 +4841,11 @@ class CodeGenerator:
 
         if name == "SCL":
             # Shift through carry left
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")
@@ -4835,7 +4865,11 @@ class CodeGenerator:
 
         if name == "SCR":
             # Shift through carry right
-            self._gen_expr(args[0])
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to HL
+                self._emit("MOV", "L,A")
+                self._emit("MVI", "H,0")
             self._emit("PUSH", "H")
             self._gen_expr(args[1])
             self._emit("MOV", "C,L")
