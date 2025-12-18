@@ -1,0 +1,131 @@
+/*
+ * BUG: ADDRESS comparison to literal fails after procedure call
+ *
+ * The ADDRESS variable prints correctly but comparison to literal fails.
+ * This may be a code generation bug where the comparison uses wrong operand.
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+PRINTHEX16: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    CALL PRINTHEX(HIGH(N));
+    CALL PRINTHEX(LOW(N));
+END PRINTHEX16;
+
+DECLARE GBUF$PTR ADDRESS;
+DECLARE GBUF BASED GBUF$PTR (256) BYTE;
+
+INNER: PROCEDURE BYTE;
+    DECLARE I BYTE;
+    I = 0;
+    DO WHILE I < 50;
+        I = I + 1;
+    END;
+    RETURN 1;
+END INNER;
+
+OUTER: PROCEDURE;
+    DECLARE SAVED$FCB (36) BYTE;
+    DECLARE VAR1 ADDRESS;
+    DECLARE VAR2 ADDRESS;
+    DECLARE ENT$PTR ADDRESS;
+    DECLARE ENT BASED ENT$PTR (32) BYTE;
+    DECLARE RESULT BYTE;
+    DECLARE (T1, T2) ADDRESS;
+
+    VAR1 = 1;
+    VAR2 = 4;
+    SAVED$FCB(0) = 'X';
+
+    /* Before call */
+    CALL PRINTCHAR('B');
+    CALL PRINTHEX16(VAR1);
+    CALL PRINTCHAR(' ');
+    CALL PRINTHEX16(VAR2);
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+
+    /* Test comparison BEFORE call */
+    IF VAR1 = 1 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+    IF VAR2 = 4 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+
+    DO WHILE VAR1 < VAR2;
+        ENT$PTR = GBUF$PTR + (VAR1 * 32);
+        IF ENT(0) = 0 THEN DO;
+            IF 1 = 1 THEN DO;
+                RESULT = INNER;
+
+                /* After call */
+                CALL PRINTCHAR('A');
+                CALL PRINTHEX16(VAR1);
+                CALL PRINTCHAR(' ');
+                CALL PRINTHEX16(VAR2);
+                CALL PRINTCHAR(13);
+                CALL PRINTCHAR(10);
+
+                /* Test comparison AFTER call - direct */
+                CALL PRINTCHAR('D');
+                IF VAR1 = 1 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                IF VAR2 = 4 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                CALL PRINTCHAR(13);
+                CALL PRINTCHAR(10);
+
+                /* Test comparison via temp */
+                T1 = VAR1;
+                T2 = VAR2;
+                CALL PRINTCHAR('T');
+                IF T1 = 1 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                IF T2 = 4 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                CALL PRINTCHAR(13);
+                CALL PRINTCHAR(10);
+
+                /* Test comparison to 0 */
+                CALL PRINTCHAR('Z');
+                IF VAR1 = 0 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                IF VAR1 <> 0 THEN CALL PRINTCHAR('Y'); ELSE CALL PRINTCHAR('N');
+                CALL PRINTCHAR(13);
+                CALL PRINTCHAR(10);
+
+                RETURN;
+            END;
+
+            VAR1 = VAR1 + 1;
+        END;
+        ELSE DO;
+            VAR1 = VAR1 + 1;
+        END;
+    END;
+END OUTER;
+
+DECLARE BUFFER (256) BYTE;
+DECLARE I BYTE;
+
+GBUF$PTR = .BUFFER;
+I = 0;
+DO WHILE I < 128;
+    BUFFER(I) = 0;
+    I = I + 1;
+END;
+
+CALL OUTER;
+
+EOF

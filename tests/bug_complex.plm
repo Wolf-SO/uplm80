@@ -1,0 +1,164 @@
+/*
+ * COMPLEX BUG: Local ADDRESS corruption after deeply nested CALL
+ *
+ * This reproduces the exact scenario from EXTRACT$LBR:
+ * - Large local array (36 bytes)
+ * - Multiple ADDRESS variables
+ * - BASED pointer access
+ * - Nested IF/ELSE blocks
+ * - CALL to procedure with many local variables and loops
+ *
+ * The bug appears even when array is declared first.
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+CRLF: PROCEDURE;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END CRLF;
+
+/* Global buffer like INBUF */
+DECLARE GBUF$PTR ADDRESS;
+DECLARE GBUF BASED GBUF$PTR (4096) BYTE;
+DECLARE GBUF$END ADDRESS;
+
+/* Complex inner procedure like UNSQUEEZE */
+INNER: PROCEDURE BYTE;
+    DECLARE (B, I) BYTE;
+    DECLARE (NODE, P, LEFT) ADDRESS;
+    DECLARE DONE BYTE;
+
+    /* Simulate Huffman decode loop */
+    DONE = 0;
+    I = 0;
+    DO WHILE NOT DONE AND I < 100;
+        NODE = 0;
+        DO WHILE NODE < 10;
+            P = NODE;
+            B = GBUF(I);
+            LEFT = B;
+            NODE = NODE + 1;
+        END;
+        I = I + 1;
+        IF I >= 50 THEN DONE = 1;
+    END;
+
+    RETURN 1;
+END INNER;
+
+/* Outer procedure like EXTRACT$LBR */
+OUTER: PROCEDURE BYTE;
+    /* Array first - should protect ADDRESS vars */
+    DECLARE SAVED$FCB (36) BYTE;
+
+    DECLARE MSG DATA('Test$');
+
+    DECLARE RESULT BYTE;
+    DECLARE DIR$SEC BYTE;
+    DECLARE ENTRY$NUM ADDRESS;
+    DECLARE MAX$ENTRIES ADDRESS;
+    DECLARE SECTORS$LEFT ADDRESS;
+    DECLARE MEMBER$INDEX ADDRESS;
+    DECLARE MEMBER$LENGTH ADDRESS;
+
+    DECLARE ENT$PTR ADDRESS;
+    DECLARE ENT BASED ENT$PTR (32) BYTE;
+
+    /* Initialize */
+    SAVED$FCB(0) = 'X';
+    DIR$SEC = 1;
+    MAX$ENTRIES = 4;
+    ENTRY$NUM = 1;
+
+    CALL PRINTCHAR('S');
+    CALL PRINTHEX(LOW(ENTRY$NUM));
+    CALL PRINTHEX(LOW(MAX$ENTRIES));
+    CALL CRLF;
+
+    /* Main loop */
+    DO WHILE ENTRY$NUM < MAX$ENTRIES;
+        ENT$PTR = GBUF$PTR + (ENTRY$NUM * 32);
+
+        IF ENT$PTR >= GBUF$PTR + GBUF$END THEN DO;
+            ENTRY$NUM = MAX$ENTRIES;
+        END;
+        ELSE DO;
+            IF ENT(0) = 0FFH THEN DO;
+                ENTRY$NUM = MAX$ENTRIES;
+            END;
+            ELSE IF ENT(0) = 0 THEN DO;
+                MEMBER$INDEX = ENT(12);
+                MEMBER$LENGTH = ENT(14);
+
+                IF MEMBER$LENGTH = 0 OR 1 = 1 THEN DO;
+                    IF 1 = 1 THEN DO;
+                        IF 1 = 1 THEN DO;
+                            /* Trace before call */
+                            CALL PRINTCHAR('{');
+                            CALL PRINTHEX(LOW(ENTRY$NUM));
+
+                            /* Nested call - this corrupts ENTRY$NUM */
+                            RESULT = INNER;
+
+                            /* Trace after call */
+                            CALL PRINTHEX(LOW(ENTRY$NUM));
+                            CALL PRINTCHAR('}');
+
+                            IF ENTRY$NUM <> 1 THEN DO;
+                                CALL PRINTCHAR('!');
+                                CALL PRINTCHAR('B');
+                                CALL PRINTCHAR('U');
+                                CALL PRINTCHAR('G');
+                                CALL CRLF;
+                                RETURN 0;
+                            END;
+                        END;
+                    END;
+                END;
+
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+            ELSE DO;
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+        END;
+    END;
+
+    CALL PRINTCHAR('P');
+    CALL PRINTCHAR('A');
+    CALL PRINTCHAR('S');
+    CALL PRINTCHAR('S');
+    CALL CRLF;
+    RETURN 1;
+END OUTER;
+
+/* Main */
+DECLARE BUFFER (256) BYTE;
+DECLARE I BYTE;
+
+GBUF$PTR = .BUFFER;
+GBUF$END = 256;
+I = 0;
+DO WHILE I < 128;
+    BUFFER(I) = 0;
+    I = I + 1;
+END;
+
+CALL OUTER;
+
+EOF

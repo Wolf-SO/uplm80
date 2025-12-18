@@ -1,0 +1,94 @@
+/*
+ * COMPILER BUG: Local ADDRESS corruption with loop
+ *
+ * The bug triggers when:
+ * - ADDRESS variable declared before array
+ * - CALL is inside a DO WHILE loop
+ * - Loop condition uses the ADDRESS variable
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+CRLF: PROCEDURE;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END CRLF;
+
+DUMMY: PROCEDURE BYTE;
+    DECLARE I BYTE;
+    I = 0;
+    DO WHILE I < 10;
+        I = I + 1;
+    END;
+    RETURN 1;
+END DUMMY;
+
+/* TEST: ADDRESS before array, CALL inside loop */
+TEST: PROCEDURE;
+    /* ADDRESS first - potential bug trigger */
+    DECLARE V1 ADDRESS;
+    DECLARE V2 ADDRESS;
+    DECLARE ARR (20) BYTE;
+    DECLARE RESULT BYTE;
+
+    V1 = 1;
+    V2 = 3;
+    ARR(0) = 'X';
+
+    CALL PRINTCHAR('L');
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('P');
+    CALL PRINTCHAR(':');
+    CALL CRLF;
+
+    DO WHILE V1 < V2;
+        CALL PRINTCHAR('<');
+        CALL PRINTHEX(LOW(V1));
+        CALL PRINTHEX(LOW(V2));
+        CALL PRINTCHAR('>');
+
+        RESULT = DUMMY;
+
+        CALL PRINTCHAR('[');
+        CALL PRINTHEX(LOW(V1));
+        CALL PRINTHEX(LOW(V2));
+        CALL PRINTCHAR(']');
+
+        IF V1 <> 1 OR V2 <> 3 THEN DO;
+            CALL PRINTCHAR('!');
+            CALL PRINTCHAR('B');
+            CALL PRINTCHAR('U');
+            CALL PRINTCHAR('G');
+            CALL CRLF;
+            RETURN;
+        END;
+
+        V1 = V1 + 1;
+        CALL CRLF;
+    END;
+
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('K');
+    CALL CRLF;
+END TEST;
+
+CALL TEST;
+
+EOF

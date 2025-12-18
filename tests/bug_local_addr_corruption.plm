@@ -1,0 +1,87 @@
+/*
+ * Bug: Local ADDRESS variables corrupted after nested procedure call
+ *
+ * This test demonstrates that local ADDRESS variables in a procedure
+ * are corrupted after calling another procedure that itself makes calls.
+ *
+ * Expected output: PASS (01 04 01 04)
+ * Actual output:   FAIL (values corrupted after INNER call)
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+/* This procedure does significant work with nested calls */
+INNER: PROCEDURE;
+    DECLARE (I, J) BYTE;
+    DECLARE BUF (256) BYTE;
+
+    /* Do some work with loops and memory */
+    I = 0;
+    DO WHILE I < 100;
+        BUF(I) = I;
+        I = I + 1;
+    END;
+
+    /* Make some nested calls */
+    CALL PRINTCHAR('.');
+END INNER;
+
+/* This procedure has local ADDRESS variables that get corrupted */
+OUTER: PROCEDURE;
+    DECLARE ENTRY$NUM ADDRESS;
+    DECLARE MAX$ENTRIES ADDRESS;
+    DECLARE (I, RESULT) BYTE;
+
+    /* Initialize locals */
+    ENTRY$NUM = 1;
+    MAX$ENTRIES = 4;
+
+    /* Print values before call */
+    CALL PRINTCHAR('<');
+    CALL PRINTHEX(LOW(ENTRY$NUM));
+    CALL PRINTCHAR(' ');
+    CALL PRINTHEX(LOW(MAX$ENTRIES));
+    CALL PRINTCHAR('>');
+
+    /* Call inner procedure - this corrupts our locals */
+    CALL INNER;
+
+    /* Print values after call - these are corrupted! */
+    CALL PRINTCHAR('<');
+    CALL PRINTHEX(LOW(ENTRY$NUM));
+    CALL PRINTCHAR(' ');
+    CALL PRINTHEX(LOW(MAX$ENTRIES));
+    CALL PRINTCHAR('>');
+
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+
+    /* Check if values are still correct */
+    IF ENTRY$NUM = 1 AND MAX$ENTRIES = 4 THEN
+        CALL PRINTCHAR('P');  /* PASS */
+    ELSE
+        CALL PRINTCHAR('F');  /* FAIL */
+
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END OUTER;
+
+CALL OUTER;
+
+EOF

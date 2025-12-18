@@ -1,0 +1,135 @@
+/*
+ * COMPILER BUG: Local ADDRESS variable corruption after CALL
+ *
+ * BUG DESCRIPTION:
+ * Local ADDRESS variables are corrupted after calling another procedure
+ * when the ADDRESS variables are declared BEFORE a local array, or when
+ * there is no local array at all.
+ *
+ * TRIGGER CONDITIONS:
+ * - Procedure has local ADDRESS variables
+ * - ADDRESS variables declared BEFORE any local array (or no array)
+ * - CALL to another procedure
+ * - After the call, the ADDRESS variable contains garbage
+ *
+ * WORKAROUND:
+ * Declare local arrays BEFORE local ADDRESS variables
+ *
+ * EXPECTED: All tests print "PASS"
+ * ACTUAL: TEST_FAIL prints "FAIL" due to corruption
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+PRINTSTR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    DECLARE C BASED S BYTE;
+    DO WHILE C <> '$';
+        CALL PRINTCHAR(C);
+        S = S + 1;
+    END;
+END PRINTSTR;
+
+CRLF: PROCEDURE;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END CRLF;
+
+/* Simple procedure to call */
+DUMMY: PROCEDURE BYTE;
+    DECLARE I BYTE;
+    I = 0;
+    DO WHILE I < 10;
+        I = I + 1;
+    END;
+    RETURN 1;
+END DUMMY;
+
+/* TEST THAT FAILS: ADDRESS before array */
+TEST$FAIL: PROCEDURE;
+    DECLARE MSG1 DATA('TEST_FAIL: $');
+    DECLARE MSG2 DATA('before=$');
+    DECLARE MSG3 DATA(' after=$');
+    DECLARE MSG$PASS DATA(' PASS$');
+    DECLARE MSG$FAIL DATA(' FAIL$');
+
+    /* BUG: ADDRESS variable declared first */
+    DECLARE MYVAR ADDRESS;
+    DECLARE MYARR (20) BYTE;
+    DECLARE RESULT BYTE;
+
+    MYVAR = 0ABCDH;
+    MYARR(0) = 'X';
+
+    CALL PRINTSTR(.MSG1);
+    CALL PRINTSTR(.MSG2);
+    CALL PRINTHEX(HIGH(MYVAR));
+    CALL PRINTHEX(LOW(MYVAR));
+
+    RESULT = DUMMY;
+
+    CALL PRINTSTR(.MSG3);
+    CALL PRINTHEX(HIGH(MYVAR));
+    CALL PRINTHEX(LOW(MYVAR));
+
+    IF MYVAR = 0ABCDH THEN
+        CALL PRINTSTR(.MSG$PASS);
+    ELSE
+        CALL PRINTSTR(.MSG$FAIL);
+    CALL CRLF;
+END TEST$FAIL;
+
+/* TEST THAT PASSES: Array before ADDRESS */
+TEST$PASS: PROCEDURE;
+    DECLARE MSG1 DATA('TEST_PASS: $');
+    DECLARE MSG2 DATA('before=$');
+    DECLARE MSG3 DATA(' after=$');
+    DECLARE MSG$PASS DATA(' PASS$');
+    DECLARE MSG$FAIL DATA(' FAIL$');
+
+    /* WORKAROUND: Array declared first */
+    DECLARE MYARR (20) BYTE;
+    DECLARE MYVAR ADDRESS;
+    DECLARE RESULT BYTE;
+
+    MYARR(0) = 'X';
+    MYVAR = 0ABCDH;
+
+    CALL PRINTSTR(.MSG1);
+    CALL PRINTSTR(.MSG2);
+    CALL PRINTHEX(HIGH(MYVAR));
+    CALL PRINTHEX(LOW(MYVAR));
+
+    RESULT = DUMMY;
+
+    CALL PRINTSTR(.MSG3);
+    CALL PRINTHEX(HIGH(MYVAR));
+    CALL PRINTHEX(LOW(MYVAR));
+
+    IF MYVAR = 0ABCDH THEN
+        CALL PRINTSTR(.MSG$PASS);
+    ELSE
+        CALL PRINTSTR(.MSG$FAIL);
+    CALL CRLF;
+END TEST$PASS;
+
+CALL TEST$FAIL;
+CALL TEST$PASS;
+
+EOF

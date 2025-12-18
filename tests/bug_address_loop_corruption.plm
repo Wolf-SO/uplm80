@@ -1,0 +1,122 @@
+/*
+ * COMPILER BUG: Local ADDRESS variable corrupted after CALL in loop
+ *
+ * DESCRIPTION:
+ * When a local ADDRESS variable is declared before a local array,
+ * and a procedure CALL is made inside a DO WHILE loop that uses
+ * that ADDRESS variable in its condition, the ADDRESS variable
+ * gets corrupted after the call returns.
+ *
+ * TRIGGER CONDITIONS:
+ * 1. Local ADDRESS variable declared BEFORE local array
+ * 2. DO WHILE loop with condition using the ADDRESS variable
+ * 3. CALL to another procedure inside the loop
+ *
+ * After the CALL returns, the ADDRESS variable contains garbage
+ * (typically it gets the value 0x0A instead of its original value).
+ *
+ * WORKAROUND:
+ * Declare local arrays BEFORE local ADDRESS variables
+ *
+ * EXPECTED OUTPUT:
+ * LOOP:
+ * <0103>[0103]
+ * <0203>[0203]
+ * OK
+ *
+ * ACTUAL OUTPUT (with bug):
+ * LOOP:
+ * <0103>[0A03]!BUG
+ *
+ * The value 01 becomes 0A after the call.
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);  /* CONOUT = 2 */
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+CRLF: PROCEDURE;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END CRLF;
+
+/* Simple procedure - just having a call triggers the bug */
+DUMMY: PROCEDURE BYTE;
+    DECLARE I BYTE;
+    I = 0;
+    DO WHILE I < 10;
+        I = I + 1;
+    END;
+    RETURN 1;
+END DUMMY;
+
+/* This procedure demonstrates the bug */
+BUGGY: PROCEDURE;
+    /* BUG TRIGGER: ADDRESS declared before array */
+    DECLARE COUNTER ADDRESS;
+    DECLARE LIMIT ADDRESS;
+    DECLARE LOCAL$ARRAY (20) BYTE;
+    DECLARE RESULT BYTE;
+
+    COUNTER = 1;
+    LIMIT = 3;
+    LOCAL$ARRAY(0) = 'X';
+
+    CALL PRINTCHAR('L');
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('P');
+    CALL PRINTCHAR(':');
+    CALL CRLF;
+
+    /* BUG TRIGGER: Loop using ADDRESS variable in condition */
+    DO WHILE COUNTER < LIMIT;
+        /* Show values before call */
+        CALL PRINTCHAR('<');
+        CALL PRINTHEX(LOW(COUNTER));
+        CALL PRINTHEX(LOW(LIMIT));
+        CALL PRINTCHAR('>');
+
+        /* BUG TRIGGER: Call inside loop */
+        RESULT = DUMMY;
+
+        /* Show values after call - COUNTER is corrupted! */
+        CALL PRINTCHAR('[');
+        CALL PRINTHEX(LOW(COUNTER));
+        CALL PRINTHEX(LOW(LIMIT));
+        CALL PRINTCHAR(']');
+
+        /* Check for corruption */
+        IF COUNTER <> 1 AND COUNTER <> 2 THEN DO;
+            CALL PRINTCHAR('!');
+            CALL PRINTCHAR('B');
+            CALL PRINTCHAR('U');
+            CALL PRINTCHAR('G');
+            CALL CRLF;
+            RETURN;
+        END;
+
+        COUNTER = COUNTER + 1;
+        CALL CRLF;
+    END;
+
+    CALL PRINTCHAR('O');
+    CALL PRINTCHAR('K');
+    CALL CRLF;
+END BUGGY;
+
+CALL BUGGY;
+
+EOF

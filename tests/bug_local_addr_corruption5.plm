@@ -1,0 +1,144 @@
+/*
+ * BUG REPRODUCTION: Local ADDRESS corruption - full 16-bit check
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+/* Print full 16-bit value */
+PRINTHEX16: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    CALL PRINTHEX(HIGH(N));
+    CALL PRINTHEX(LOW(N));
+END PRINTHEX16;
+
+/* Global buffer */
+DECLARE GBUF$PTR ADDRESS;
+DECLARE GBUF BASED GBUF$PTR (256) BYTE;
+
+/* Inner procedure with loops */
+INNER: PROCEDURE BYTE;
+    DECLARE (I, B) BYTE;
+    DECLARE P ADDRESS;
+
+    I = 0;
+    DO WHILE I < 50;
+        B = GBUF(I);
+        P = 0;
+        DO WHILE P < 10;
+            P = P + 1;
+        END;
+        I = I + 1;
+    END;
+    RETURN 1;
+END INNER;
+
+/* Procedure with BASED pointer access */
+OUTER: PROCEDURE;
+    DECLARE SAVED$FCB (36) BYTE;
+    DECLARE ENTRY$NUM ADDRESS;
+    DECLARE MAX$ENTRIES ADDRESS;
+    DECLARE MEMBER$INDEX ADDRESS;
+    DECLARE MEMBER$LENGTH ADDRESS;
+
+    DECLARE ENT$PTR ADDRESS;
+    DECLARE ENT BASED ENT$PTR (32) BYTE;
+
+    DECLARE RESULT BYTE;
+
+    ENTRY$NUM = 1;
+    MAX$ENTRIES = 4;
+    SAVED$FCB(0) = 'X';
+
+    CALL PRINTCHAR('S');
+    CALL PRINTHEX16(ENTRY$NUM);
+    CALL PRINTCHAR(' ');
+    CALL PRINTHEX16(MAX$ENTRIES);
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+
+    DO WHILE ENTRY$NUM < MAX$ENTRIES;
+        ENT$PTR = GBUF$PTR + (ENTRY$NUM * 32);
+
+        IF ENT$PTR >= GBUF$PTR + 256 THEN DO;
+            ENTRY$NUM = MAX$ENTRIES;
+        END;
+        ELSE DO;
+            IF ENT(0) = 0 THEN DO;
+                MEMBER$INDEX = ENT(12);
+                MEMBER$LENGTH = ENT(14);
+
+                IF MEMBER$LENGTH = 0 OR 1 = 1 THEN DO;
+                    IF 1 = 1 THEN DO;
+                        CALL PRINTCHAR('<');
+                        CALL PRINTHEX16(ENTRY$NUM);
+                        CALL PRINTCHAR(' ');
+                        CALL PRINTHEX16(MAX$ENTRIES);
+                        CALL PRINTCHAR('>');
+
+                        RESULT = INNER;
+
+                        CALL PRINTCHAR('[');
+                        CALL PRINTHEX16(ENTRY$NUM);
+                        CALL PRINTCHAR(' ');
+                        CALL PRINTHEX16(MAX$ENTRIES);
+                        CALL PRINTCHAR(']');
+                        CALL PRINTCHAR(13);
+                        CALL PRINTCHAR(10);
+
+                        IF ENTRY$NUM <> 1 OR MAX$ENTRIES <> 4 THEN DO;
+                            CALL PRINTCHAR('F');
+                            CALL PRINTCHAR('A');
+                            CALL PRINTCHAR('I');
+                            CALL PRINTCHAR('L');
+                            CALL PRINTCHAR(13);
+                            CALL PRINTCHAR(10);
+                            RETURN;
+                        END;
+                    END;
+                END;
+
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+            ELSE DO;
+                ENTRY$NUM = ENTRY$NUM + 1;
+            END;
+        END;
+    END;
+
+    CALL PRINTCHAR('P');
+    CALL PRINTCHAR('A');
+    CALL PRINTCHAR('S');
+    CALL PRINTCHAR('S');
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END OUTER;
+
+DECLARE BUFFER (256) BYTE;
+DECLARE I BYTE;
+
+GBUF$PTR = .BUFFER;
+I = 0;
+DO WHILE I < 128;
+    BUFFER(I) = 0;
+    I = I + 1;
+END;
+
+CALL OUTER;
+
+EOF

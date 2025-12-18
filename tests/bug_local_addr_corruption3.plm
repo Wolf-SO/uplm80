@@ -1,0 +1,97 @@
+/*
+ * MINIMAL BUG REPRODUCTION: Local ADDRESS corruption after CALL
+ *
+ * Bug: Local ADDRESS variables are corrupted after calling a procedure
+ * when the calling procedure has a local array.
+ *
+ * Before INNER call: ENTRY$NUM=01, MAX$ENTRIES=04
+ * After INNER call:  ENTRY$NUM=0A, MAX$ENTRIES=09 (CORRUPTED!)
+ *
+ * Trigger conditions:
+ * 1. Procedure has local array (SAVED$FCB)
+ * 2. Procedure has local ADDRESS variables after the array
+ * 3. CALL to another procedure
+ *
+ * The stack frame is not being restored correctly after the call.
+ */
+
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+DECLARE CONOUT LITERALLY '2';
+
+PRINTCHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(CONOUT, C);
+END PRINTCHAR;
+
+PRINTHEX: PROCEDURE(N);
+    DECLARE N BYTE;
+    DECLARE HEX DATA('0123456789ABCDEF');
+    CALL PRINTCHAR(HEX(SHR(N, 4)));
+    CALL PRINTCHAR(HEX(N AND 0FH));
+END PRINTHEX;
+
+/* Simple inner procedure */
+INNER: PROCEDURE BYTE;
+    DECLARE I BYTE;
+    I = 0;
+    DO WHILE I < 10;
+        I = I + 1;
+    END;
+    RETURN 1;
+END INNER;
+
+/* Procedure with local array + ADDRESS variables */
+OUTER: PROCEDURE;
+    /* Local array - THIS TRIGGERS THE BUG */
+    DECLARE LOCAL$ARRAY (36) BYTE;
+
+    /* Local ADDRESS variables - THESE GET CORRUPTED */
+    DECLARE VAR1 ADDRESS;
+    DECLARE VAR2 ADDRESS;
+
+    DECLARE RESULT BYTE;
+
+    /* Initialize */
+    VAR1 = 1;
+    VAR2 = 4;
+    LOCAL$ARRAY(0) = 'X';
+
+    /* Print before */
+    CALL PRINTCHAR('<');
+    CALL PRINTHEX(LOW(VAR1));
+    CALL PRINTHEX(LOW(VAR2));
+
+    /* This call corrupts VAR1 and VAR2 */
+    RESULT = INNER;
+
+    /* Print after - values are wrong! */
+    CALL PRINTCHAR('>');
+    CALL PRINTHEX(LOW(VAR1));
+    CALL PRINTHEX(LOW(VAR2));
+
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+
+    /* Verify */
+    IF VAR1 = 1 AND VAR2 = 4 THEN DO;
+        CALL PRINTCHAR('P');
+        CALL PRINTCHAR('A');
+        CALL PRINTCHAR('S');
+        CALL PRINTCHAR('S');
+    END;
+    ELSE DO;
+        CALL PRINTCHAR('F');
+        CALL PRINTCHAR('A');
+        CALL PRINTCHAR('I');
+        CALL PRINTCHAR('L');
+    END;
+    CALL PRINTCHAR(13);
+    CALL PRINTCHAR(10);
+END OUTER;
+
+CALL OUTER;
+
+EOF
