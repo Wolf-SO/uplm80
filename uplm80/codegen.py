@@ -1282,6 +1282,7 @@ class CodeGenerator:
         """Generate storage for a variable declaration."""
         # Mangle name if it conflicts with register names
         base_name = self._mangle_name(decl.name)
+        asm_name: str | None = base_name  # Default, may be overridden below
 
         # Check if we're in a reentrant procedure - locals go on stack
         in_reentrant = (self.current_proc_decl is not None and
