@@ -57,8 +57,7 @@ from .runtime import get_runtime_library
 class Target(Enum):
     """Target processor."""
 
-    I8080 = auto()
-    Z80 = auto()
+    Z80 = auto()  # Z80 only - 8080 target removed
 
 
 class Mode(Enum):
@@ -140,7 +139,7 @@ class CodeGenerator:
         self.embedded_assign_target: str | None = None  # Variable name of last embedded assignment
         # Current IF statement being processed (for embedded assign optimization)
         self.current_if_stmt: IfStmt | None = None
-        # Flag: A register contains L (low byte of HL) - for avoiding redundant MOV A,L
+        # Flag: A register contains L (low byte of HL) - for avoiding redundant ld a,L
         self.a_has_l: bool = False
 
     def _parse_plm_number(self, s: str) -> int:
@@ -289,24 +288,24 @@ class CodeGenerator:
         as a scratch register. Only certain simple operations preserve A.
         """
         if isinstance(expr, NumberLiteral):
-            return False  # LXI H,const doesn't touch A
+            return False  # ld hl,const doesn't touch A
 
         if isinstance(expr, Identifier):
             # Loading a variable clobbers A (for BYTE) or doesn't touch A (for ADDRESS in HL)
             sym = self._lookup_symbol(expr.name)
             if sym and sym.data_type == DataType.BYTE:
-                return True  # LDA clobbers A
-            return False  # LHLD doesn't clobber A
+                return True  # ld a,(addr) clobbers A
+            return False  # ld hl,(addr) doesn't clobber A
 
         if isinstance(expr, BinaryExpr):
             # Check expression type - ADDRESS operations use HL, not A
             expr_type = self._get_expr_type(expr)
             if expr_type == DataType.ADDRESS:
-                # ADDRESS arithmetic uses DAD which doesn't clobber A
+                # ADDRESS arithmetic uses add hl,rp which doesn't clobber A
                 # But we need to check if operands clobber A
                 op = expr.op
                 if op == BinaryOp.ADD:
-                    # LHLD, DAD preserves A
+                    # ld hl,(addr), add hl,rp preserves A
                     left_clobbers = self._expr_clobbers_a(expr.left)
                     right_clobbers = self._expr_clobbers_a(expr.right)
                     return left_clobbers or right_clobbers
@@ -335,7 +334,7 @@ class CodeGenerator:
                 if isinstance(target, Identifier):
                     sym = self._lookup_symbol(target.name)
                     if not sym or sym.data_type == DataType.BYTE:
-                        return True  # BYTE assignment uses STA -> doesn't clobber but value changes
+                        return True  # BYTE assignment uses LD (addr),A -> doesn't clobber but value changes
                 else:
                     return True  # Complex target likely clobbers A
             # Check if value expression clobbers A
@@ -352,10 +351,10 @@ class CodeGenerator:
             return False
 
         if isinstance(stmt, GotoStmt):
-            return False  # JMP doesn't clobber A
+            return False  # jp doesn't clobber A
 
         if isinstance(stmt, HaltStmt):
-            return False  # HLT doesn't clobber A
+            return False  # halt doesn't clobber A
 
         if isinstance(stmt, EnableStmt) or isinstance(stmt, DisableStmt):
             return False  # EI/DI don't clobber A
@@ -364,24 +363,24 @@ class CodeGenerator:
             # IF condition evaluation may clobber A
             # But we special-case conditions that don't change A
 
-            # Simple identifier test: ORA A / OR A doesn't change A
+            # Simple identifier test: or a doesn't change A
             if isinstance(stmt.condition, Identifier):
                 cond_type = self._get_expr_type(stmt.condition)
                 if cond_type == DataType.BYTE:
-                    # LDA x; ORA A - LDA clobbers A, so this does clobber
+                    # ld a,(x); or a - ld a,(x) clobbers A, so this does clobber
                     return True
-                # For ADDRESS: MOV A,L; ORA H - this clobbers A
+                # For ADDRESS: ld a,L; or h - this clobbers A
                 return True
 
-            # Comparisons: CPI doesn't change A
+            # Comparisons: cp n doesn't change A
             if isinstance(stmt.condition, BinaryExpr):
                 op = stmt.condition.op
                 if op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
-                    # Comparison: CPI doesn't clobber A, but we need to check
+                    # Comparison: cp n doesn't clobber A, but we need to check
                     # if the left side is already in A or requires loading
                     left_type = self._get_expr_type(stmt.condition.left)
                     if left_type == DataType.BYTE:
-                        # For byte comparisons, if right is constant, uses CPI which preserves A
+                        # For byte comparisons, if right is constant, uses cp n which preserves A
                         if isinstance(stmt.condition.right, NumberLiteral):
                             # Check if then/else branches clobber A
                             then_clobbers = self._stmt_clobbers_a(stmt.then_stmt)
@@ -638,7 +637,7 @@ class CodeGenerator:
             reachable[proc] = self._get_reachable(proc, set())
 
         # Two procs can be active together if one is reachable from the other
-        # OR if they share a common caller (both reachable from same proc)
+        # or if they share a common caller (both reachable from same proc)
         for proc in self.call_graph:
             # Add all procs reachable from this one
             self.can_be_active_together[proc].update(reachable[proc])
@@ -737,8 +736,8 @@ class CodeGenerator:
 
         Uses CALL ??SUBDE runtime routine to save code space.
         """
-        self.needs_runtime.add("SUBDE")
-        self._emit("CALL", "??SUBDE")
+        self.needs_runtime.add("subde")
+        self._emit("call", "??subde")
 
     def _new_label(self, prefix: str = "L") -> str:
         """Generate a new unique label."""
@@ -854,18 +853,17 @@ class CodeGenerator:
 
         # Header
         self._emit(comment=f"PL/M-80 Compiler Output - {module.name}")
-        self._emit(comment=f"Target: {'8080' if self.target == Target.I8080 else 'Z80'}")
+        self._emit(comment="Target: Z80")
         self._emit(comment="Generated by uplm80")
         self._emit()
 
-        # For Z80 target, emit .Z80 directive for assembler
-        if self.target == Target.Z80:
-            self._emit(".Z80")
-            self._emit()
+        # Emit .z80 directive for assembler
+        self._emit(".z80")
+        self._emit()
 
         # Origin if specified
         if module.origin is not None:
-            self._emit("ORG", self._format_number(module.origin))
+            self._emit("org", self._format_number(module.origin))
             self._emit()
 
         # First pass: collect LITERALLY macros
@@ -922,14 +920,14 @@ class CodeGenerator:
             self._emit(comment="Entry point")
             if self.mode == Mode.CPM:
                 # CP/M: Set stack from BDOS, call main, return to OS
-                self._emit("LD", "HL,(6)")
-                self._emit("LD", "SP,HL")
-                self._emit("CALL", entry_proc.name)
-                self._emit("JP", "0")  # Warm boot to return to CP/M
+                self._emit("ld", "hl,(6)")
+                self._emit("ld", "sp,hl")
+                self._emit("call", entry_proc.name)
+                self._emit("jp", "0")  # Warm boot to return to CP/M
             else:
                 # BARE: Use locally-defined stack, jump to entry
-                self._emit("LXI", "SP,??STACK")
-                self._emit("JMP", entry_proc.name)
+                self._emit("ld", "sp,??STACK")
+                self._emit("jp", entry_proc.name)
 
         # Generate code for module-level statements
         if module.stmts:
@@ -937,16 +935,16 @@ class CodeGenerator:
             self._emit(comment="Module initialization code")
             if self.mode == Mode.CPM:
                 # CP/M: Set stack from BDOS address at 0006H
-                self._emit("LD", "HL,(6)")
-                self._emit("LD", "SP,HL")
+                self._emit("ld", "hl,(6)")
+                self._emit("ld", "sp,hl")
             else:
                 # BARE: Use locally-defined stack
-                self._emit("LXI", "SP,??STACK")
+                self._emit("ld", "sp,??STACK")
             for stmt in module.stmts:
                 self._gen_stmt(stmt)
             # For CPM mode, add warm boot after module statements
             if self.mode == Mode.CPM:
-                self._emit("JP", "0")  # Warm boot to return to CP/M
+                self._emit("jp", "0")  # Warm boot to return to CP/M
 
         # Generate procedures
         for proc in procedures:
@@ -981,7 +979,7 @@ class CodeGenerator:
             for label, value in self.string_literals:
                 self._emit_label(label)
                 escaped = self._escape_string(value)
-                self._emit("DB", escaped)
+                self._emit("db", escaped)
 
         # Emit data segment
         if self.data_segment:
@@ -994,13 +992,13 @@ class CodeGenerator:
             self._emit()
             self._emit(comment=f"Shared automatic storage ({self.total_auto_storage} bytes)")
             self._emit_label("??AUTO")
-            self._emit("DS", str(self.total_auto_storage))
+            self._emit("ds", str(self.total_auto_storage))
 
         # Emit stack storage for BARE mode
         if self.mode == Mode.BARE:
             self._emit()
             self._emit(comment="Stack storage (64 bytes)")
-            self._emit("DS", "64")
+            self._emit("ds", "64")
             self._emit_label("??STACK")  # Label after buffer (top of stack)
 
         # Note: For CPM mode, stack is provided by CP/M (set from BDOS address at 0006H).
@@ -1010,11 +1008,11 @@ class CodeGenerator:
         # __END__ is provided by the linker as the first free byte after all code/data
         if self.needs_end_symbol:
             self._emit()
-            self._emit("EXTRN", "__END__")
+            self._emit("extrn", "__END__")
 
         # End directive
         self._emit()
-        self._emit("END")
+        self._emit("end")
 
         # Convert to string
         return "\n".join(str(line) for line in self.output)
@@ -1039,18 +1037,17 @@ class CodeGenerator:
         # Header
         module_names = ', '.join(m.name for m in modules)
         self._emit(comment=f"PL/M-80 Compiler Output - {module_names}")
-        self._emit(comment=f"Target: {'8080' if self.target == Target.I8080 else 'Z80'}")
+        self._emit(comment="Target: Z80")
         self._emit(comment="Generated by uplm80")
         self._emit()
 
-        # For Z80 target, emit .Z80 directive for assembler
-        if self.target == Target.Z80:
-            self._emit(".Z80")
-            self._emit()
+        # Emit .z80 directive for assembler
+        self._emit(".z80")
+        self._emit()
 
         # Use origin from first module if specified
         if modules[0].origin is not None:
-            self._emit("ORG", self._format_number(modules[0].origin))
+            self._emit("org", self._format_number(modules[0].origin))
             self._emit()
 
         # Collect LITERALLY macros from all modules
@@ -1108,26 +1105,26 @@ class CodeGenerator:
             self._emit()
             self._emit(comment="Module initialization")
             if self.mode == Mode.CPM:
-                self._emit("LD", "HL,(6)")
-                self._emit("LD", "SP,HL")
+                self._emit("ld", "hl,(6)")
+                self._emit("ld", "sp,hl")
             else:
-                self._emit("LXI", "SP,??STACK")
+                self._emit("ld", "sp,??STACK")
             for stmt in first_module_with_stmts.stmts:
                 self._gen_stmt(stmt)
             if self.mode == Mode.CPM:
-                self._emit("JP", "0")
+                self._emit("jp", "0")
         elif entry_proc:
             # No statements - call entry procedure
             self._emit()
             self._emit(comment="Entry point")
             if self.mode == Mode.CPM:
-                self._emit("LD", "HL,(6)")
-                self._emit("LD", "SP,HL")
-                self._emit("CALL", entry_proc.name)
-                self._emit("JP", "0")
+                self._emit("ld", "hl,(6)")
+                self._emit("ld", "sp,hl")
+                self._emit("call", entry_proc.name)
+                self._emit("jp", "0")
             else:
-                self._emit("LXI", "SP,??STACK")
-                self._emit("CALL", entry_proc.name)
+                self._emit("ld", "sp,??STACK")
+                self._emit("call", entry_proc.name)
 
         # Generate code for all procedures
         for module, proc in all_procedures:
@@ -1162,7 +1159,7 @@ class CodeGenerator:
             for label, value in self.string_literals:
                 self._emit_label(label)
                 escaped = self._escape_string(value)
-                self._emit("DB", escaped)
+                self._emit("db", escaped)
 
         # Emit data segment
         if self.data_segment:
@@ -1175,24 +1172,24 @@ class CodeGenerator:
             self._emit()
             self._emit(comment=f"Shared automatic storage ({self.total_auto_storage} bytes)")
             self._emit_label("??AUTO")
-            self._emit("DS", str(self.total_auto_storage))
+            self._emit("ds", str(self.total_auto_storage))
 
         # Emit stack storage for BARE mode
         if self.mode == Mode.BARE:
             self._emit()
             self._emit(comment="Stack storage (64 bytes)")
-            self._emit("DS", "64")
+            self._emit("ds", "64")
             self._emit_label("??STACK")
 
         # Emit EXTRN for __END__ if program uses .MEMORY built-in
         # __END__ is provided by the linker as the first free byte after all code/data
         if self.needs_end_symbol:
             self._emit()
-            self._emit("EXTRN", "__END__")
+            self._emit("extrn", "__END__")
 
         # End directive
         self._emit()
-        self._emit("END")
+        self._emit("end")
 
         return "\n".join(str(line) for line in self.output)
 
@@ -1279,7 +1276,7 @@ class CodeGenerator:
                 )
             )
             if decl.is_external:
-                self._emit("EXTRN", decl.name)
+                self._emit("extrn", decl.name)
 
     def _gen_var_decl(self, decl: VarDecl) -> None:
         """Generate storage for a variable declaration."""
@@ -1352,12 +1349,12 @@ class CodeGenerator:
 
         # External variables don't get storage here
         if decl.is_external:
-            self._emit("EXTRN", asm_name)
+            self._emit("extrn", asm_name)
             return
 
         # Public declaration
         if decl.is_public:
-            self._emit("PUBLIC", asm_name)
+            self._emit("public", asm_name)
 
         # Based variables don't allocate storage - they're pointers to other storage
         if decl.based_on:
@@ -1426,7 +1423,7 @@ class CodeGenerator:
         else:
             # Uninitialized storage
             self.data_segment.append(
-                AsmLine(label=asm_name, opcode="DS", operands=str(size))
+                AsmLine(label=asm_name, opcode="ds", operands=str(size))
             )
 
     def _emit_data_values(self, values: list[Expr], dtype: DataType, inline: bool = False) -> None:
@@ -1434,13 +1431,13 @@ class CodeGenerator:
         target = self.code_data_segment if inline else self.data_segment
         for val in values:
             if isinstance(val, NumberLiteral):
-                directive = "DB" if dtype == DataType.BYTE else "DW"
+                directive = "db" if dtype == DataType.BYTE else "dw"
                 target.append(
                     AsmLine(opcode=directive, operands=self._format_number(val.value))
                 )
             elif isinstance(val, StringLiteral):
                 target.append(
-                    AsmLine(opcode="DB", operands=self._escape_string(val.value))
+                    AsmLine(opcode="db", operands=self._escape_string(val.value))
                 )
             elif isinstance(val, Identifier):
                 # Could be a LITERALLY macro - expand it
@@ -1449,19 +1446,19 @@ class CodeGenerator:
                     # Try to parse the macro value as a number
                     try:
                         num_val = self._parse_plm_number(self.literal_macros[name])
-                        directive = "DB" if dtype == DataType.BYTE else "DW"
+                        directive = "db" if dtype == DataType.BYTE else "dw"
                         target.append(
                             AsmLine(opcode=directive, operands=self._format_number(num_val))
                         )
                     except ValueError:
                         # Not a number, use as-is
                         target.append(
-                            AsmLine(opcode="DB", operands=self.literal_macros[name])
+                            AsmLine(opcode="db", operands=self.literal_macros[name])
                         )
                 else:
                     # Unknown identifier - use as label reference
                     target.append(
-                        AsmLine(opcode="DW", operands=name)
+                        AsmLine(opcode="dw", operands=name)
                     )
             elif isinstance(val, LocationExpr):
                 # Address-of expression: .variable or .procedure
@@ -1469,7 +1466,7 @@ class CodeGenerator:
                 if isinstance(operand, Identifier):
                     # .name means address of name
                     target.append(
-                        AsmLine(opcode="DW", operands=operand.name)
+                        AsmLine(opcode="dw", operands=operand.name)
                     )
                 else:
                     raise CodeGenError(f"Unsupported operand in DATA location expression: {operand}")
@@ -1478,7 +1475,7 @@ class CodeGenerator:
                 # Generate assembly expression string
                 expr_str = self._data_expr_to_string(val)
                 target.append(
-                    AsmLine(opcode="DW", operands=expr_str)
+                    AsmLine(opcode="dw", operands=expr_str)
                 )
             elif isinstance(val, ConstListExpr):
                 # Nested constant list
@@ -1516,13 +1513,13 @@ class CodeGenerator:
         """Emit INITIAL values to data segment."""
         for val in values:
             if isinstance(val, NumberLiteral):
-                directive = "DB" if dtype == DataType.BYTE else "DW"
+                directive = "db" if dtype == DataType.BYTE else "dw"
                 self.data_segment.append(
                     AsmLine(opcode=directive, operands=self._format_number(val.value))
                 )
             elif isinstance(val, StringLiteral):
                 self.data_segment.append(
-                    AsmLine(opcode="DB", operands=self._escape_string(val.value))
+                    AsmLine(opcode="db", operands=self._escape_string(val.value))
                 )
 
     def _gen_proc_decl(self, decl: ProcDecl) -> None:
@@ -1564,14 +1561,14 @@ class CodeGenerator:
             proc_asm_name = sym.asm_name or proc_asm_name
 
         if decl.is_external:
-            self._emit("EXTRN", proc_asm_name)
+            self._emit("extrn", proc_asm_name)
             self.current_proc = old_proc
             self.current_proc_decl = old_proc_decl
             return
 
         self._emit()
         if decl.is_public:
-            self._emit("PUBLIC", decl.name)
+            self._emit("public", decl.name)
 
         self._emit(comment=f"Procedure {decl.name}")
         self._emit_label(proc_asm_name)
@@ -1582,10 +1579,10 @@ class CodeGenerator:
         # Procedure prologue
         if decl.interrupt_num is not None:
             # Interrupt handler - save all registers
-            self._emit("PUSH", "PSW")
-            self._emit("PUSH", "B")
-            self._emit("PUSH", "D")
-            self._emit("PUSH", "H")
+            self._emit("push", "af")
+            self._emit("push", "bc")
+            self._emit("push", "de")
+            self._emit("push", "hl")
 
         # Define parameters as local variables
         # For non-reentrant: use shared automatic storage via storage_labels
@@ -1597,9 +1594,9 @@ class CodeGenerator:
         # Stack at entry: [params...][ret_addr] <- SP
         # After PUSH IX: [params...][ret_addr][saved_IX] <- SP, IX
         if decl.is_reentrant:
-            self._emit("PUSH", "IX")
-            self._emit("LD", "IX,0")
-            self._emit("ADD", "IX,SP")
+            self._emit("push", "ix")
+            self._emit("ld", "ix,0")
+            self._emit("add", "ix,sp")
 
         # Calculate parameter offsets for reentrant procedures
         # Stack after PUSH IX: [params...][ret_addr(2)][saved_IX(2)] <- IX
@@ -1659,7 +1656,7 @@ class CodeGenerator:
                     asm_name = f"@{decl.name}${self._mangle_name(param)}"
                     # Allocate individual storage in data segment
                     self.data_segment.append(
-                        AsmLine(label=asm_name, opcode="DS", operands=str(param_size))
+                        AsmLine(label=asm_name, opcode="ds", operands=str(param_size))
                     )
 
                 self.symbols.define(
@@ -1679,10 +1676,10 @@ class CodeGenerator:
             last_param_name, last_asm_name, last_param_type, last_param_size = param_infos[-1]
             if last_param_type == DataType.BYTE:
                 # Last param came in A - store it
-                self._emit("STA", last_asm_name)
+                self._emit("ld", f"({last_asm_name}),a")
             else:
                 # Last param came in HL - store it
-                self._emit("SHLD", last_asm_name)
+                self._emit("ld", f"({last_asm_name}),hl")
 
         # Track locals offset for reentrant procedures (negative from IX)
         self._reentrant_local_offset = 0  # Will be decremented as locals are allocated
@@ -1717,10 +1714,10 @@ class CodeGenerator:
         # For reentrant procedures, allocate stack space for locals
         if decl.is_reentrant and self._reentrant_local_offset < 0:
             # Allocate stack space: SP = SP + offset (offset is negative)
-            # LD HL,offset; ADD HL,SP; LD SP,HL
-            self._emit("LD", f"HL,{self._reentrant_local_offset}")
-            self._emit("ADD", "HL,SP")
-            self._emit("LD", "SP,HL")
+            # ld hl,offset; add hl,sp; ld sp,hl
+            self._emit("ld", f"hl,{self._reentrant_local_offset}")
+            self._emit("add", "hl,sp")
+            self._emit("ld", "sp,hl")
 
         # Generate code for statements with liveness tracking
         ends_with_return = False
@@ -1746,21 +1743,21 @@ class CodeGenerator:
     def _gen_proc_epilogue(self, decl: ProcDecl) -> None:
         """Generate procedure epilogue."""
         if decl.interrupt_num is not None:
-            self._emit("POP", "H")
-            self._emit("POP", "D")
-            self._emit("POP", "B")
-            self._emit("POP", "PSW")
-            self._emit("EI")
-            self._emit("RET")
+            self._emit("pop", "hl")
+            self._emit("pop", "de")
+            self._emit("pop", "bc")
+            self._emit("pop", "af")
+            self._emit("ei")
+            self._emit("ret")
         elif decl.is_reentrant:
             # Restore stack pointer and frame pointer for reentrant procedures
-            # LD SP,IX restores SP to point to saved IX
-            # POP IX restores the old frame pointer
-            self._emit("LD", "SP,IX")
-            self._emit("POP", "IX")
-            self._emit("RET")
+            # ld sp,ix restores SP to point to saved IX
+            # pop IX restores the old frame pointer
+            self._emit("ld", "sp,ix")
+            self._emit("pop", "ix")
+            self._emit("ret")
         else:
-            self._emit("RET")
+            self._emit("ret")
 
     # ========================================================================
     # Statement Code Generation
@@ -1788,13 +1785,13 @@ class CodeGenerator:
             elif self.current_proc:
                 # Procedure-local label - prefix with current procedure
                 target = f"@{self.current_proc}${target}"
-            self._emit("JMP", target)
+            self._emit("jp", target)
         elif isinstance(stmt, HaltStmt):
-            self._emit("HLT")
+            self._emit("halt")
         elif isinstance(stmt, EnableStmt):
-            self._emit("EI")
+            self._emit("ei")
         elif isinstance(stmt, DisableStmt):
-            self._emit("DI")
+            self._emit("di")
         elif isinstance(stmt, NullStmt):
             pass  # No code
         elif isinstance(stmt, LabeledStmt):
@@ -1829,7 +1826,7 @@ class CodeGenerator:
     def _gen_assign(self, stmt: AssignStmt) -> None:
         """Generate code for assignment."""
         # Special case: storing small constant to BYTE variable
-        # Use XRA A (for 0) or MVI A,n (for other bytes) instead of LXI H,n
+        # Use Xor a (for 0) or ld a,n (for other bytes) instead of ld hl,n
         if isinstance(stmt.value, NumberLiteral) and stmt.value.value <= 255:
             # Check if all targets are BYTE variables or BYTE array elements
             all_byte_targets = True
@@ -1868,16 +1865,16 @@ class CodeGenerator:
             if all_byte_targets:
                 # Generate efficient byte constant
                 if stmt.value.value == 0:
-                    self._emit("XRA", "A")
+                    self._emit("xor", "a")
                 else:
-                    self._emit("MVI", f"A,{self._format_number(stmt.value.value)}")
+                    self._emit("ld", f"a,{self._format_number(stmt.value.value)}")
 
                 for i, target in enumerate(stmt.targets):
                     if i < len(stmt.targets) - 1:
-                        self._emit("PUSH", "PSW")
+                        self._emit("push", "af")
                     self._gen_store(target, DataType.BYTE)
                     if i < len(stmt.targets) - 1:
-                        self._emit("POP", "PSW")
+                        self._emit("pop", "af")
                 return
 
         # Evaluate the value expression (result in A for BYTE, HL for ADDRESS)
@@ -1888,17 +1885,17 @@ class CodeGenerator:
             if i < len(stmt.targets) - 1:
                 # Need to preserve value for next target
                 if value_type == DataType.BYTE:
-                    self._emit("PUSH", "PSW")
+                    self._emit("push", "af")
                 else:
-                    self._emit("PUSH", "H")
+                    self._emit("push", "hl")
 
             self._gen_store(target, value_type)
 
             if i < len(stmt.targets) - 1:
                 if value_type == DataType.BYTE:
-                    self._emit("POP", "PSW")
+                    self._emit("pop", "af")
                 else:
-                    self._emit("POP", "H")
+                    self._emit("pop", "hl")
 
     def _gen_call_stmt(self, stmt: CallStmt) -> None:
         """Generate code for a CALL statement."""
@@ -1942,15 +1939,15 @@ class CodeGenerator:
                         pass
 
                 if func_num is not None and func_num <= 255:
-                    # Generate direct BDOS call: MVI C,func; LXI D,addr; CALL 5
-                    self._emit("MVI", f"C,{self._format_number(func_num)}")
+                    # Generate direct BDOS call: ld c,func; ld de,addr; CALL 5
+                    self._emit("ld", f"c,{self._format_number(func_num)}")
                     addr_type = self._gen_expr(addr_arg)
                     if addr_type == DataType.BYTE:
                         # BYTE arg goes in E; BDOS ignores D for byte-only functions
-                        self._emit("MOV", "E,A")
+                        self._emit("ld", "e,a")
                     else:
-                        self._emit("XCHG")  # DE = addr
-                    self._emit("CALL", "5")  # BDOS entry point
+                        self._emit("ex", "de,hl")  # DE = addr
+                    self._emit("call", "5")  # BDOS entry point
                     return  # Done - no stack cleanup needed
 
         # For non-reentrant LOCAL procedures, store args directly to parameter memory
@@ -1967,9 +1964,9 @@ class CodeGenerator:
             for arg in stmt.args:
                 arg_type = self._gen_expr(arg)
                 if arg_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
-                self._emit("PUSH", "H")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("push", "hl")
         else:
             # Direct memory parameter passing (non-reentrant)
             # Last param is passed in register (A for BYTE, HL for ADDRESS)
@@ -1988,26 +1985,26 @@ class CodeGenerator:
                         # Optimize constants for BYTE
                         if param_type == DataType.BYTE:
                             if isinstance(arg, NumberLiteral) and arg.value <= 255:
-                                self._emit("MVI", f"A,{self._format_number(arg.value)}")
+                                self._emit("ld", f"a,{self._format_number(arg.value)}")
                                 continue
                             elif isinstance(arg, StringLiteral) and len(arg.value) == 1:
-                                self._emit("MVI", f"A,{self._format_number(ord(arg.value[0]))}")
+                                self._emit("ld", f"a,{self._format_number(ord(arg.value[0]))}")
                                 continue
                             elif isinstance(arg, Identifier) and arg.name in self.literal_macros:
                                 try:
                                     val = self._parse_plm_number(self.literal_macros[arg.name])
                                     if val <= 255:
-                                        self._emit("MVI", f"A,{self._format_number(val)}")
+                                        self._emit("ld", f"a,{self._format_number(val)}")
                                         continue
                                 except (ValueError, TypeError):
                                     pass
                         # Evaluate arg - result in A (BYTE) or HL (ADDRESS)
                         arg_type = self._gen_expr(arg)
                         if param_type == DataType.BYTE and arg_type == DataType.ADDRESS:
-                            self._emit("MOV", "A,L")
+                            self._emit("ld", "a,l")
                         elif param_type == DataType.ADDRESS and arg_type == DataType.BYTE:
-                            self._emit("MOV", "L,A")
-                            self._emit("MVI", "H,0")
+                            self._emit("ld", "l,a")
+                            self._emit("ld", "h,0")
                         continue
 
                     # Non-last params: store to memory
@@ -2024,61 +2021,61 @@ class CodeGenerator:
                             proc_base = proc_base[1:]
                         param_asm = f"@{proc_base}${self._mangle_name(param_name)}"
 
-                    # Optimize: for BYTE parameter with constant, use MVI A directly
+                    # Optimize: for BYTE parameter with constant, use ld a,n directly
                     if param_type == DataType.BYTE:
                         if isinstance(arg, NumberLiteral) and arg.value <= 255:
-                            self._emit("MVI", f"A,{self._format_number(arg.value)}")
-                            self._emit("STA", param_asm)
+                            self._emit("ld", f"a,{self._format_number(arg.value)}")
+                            self._emit("ld", f"({param_asm}),a")
                             continue
                         elif isinstance(arg, StringLiteral) and len(arg.value) == 1:
-                            self._emit("MVI", f"A,{self._format_number(ord(arg.value[0]))}")
-                            self._emit("STA", param_asm)
+                            self._emit("ld", f"a,{self._format_number(ord(arg.value[0]))}")
+                            self._emit("ld", f"({param_asm}),a")
                             continue
                         # Check for LITERALLY macro
                         elif isinstance(arg, Identifier) and arg.name in self.literal_macros:
                             try:
                                 val = self._parse_plm_number(self.literal_macros[arg.name])
                                 if val <= 255:
-                                    self._emit("MVI", f"A,{self._format_number(val)}")
-                                    self._emit("STA", param_asm)
+                                    self._emit("ld", f"a,{self._format_number(val)}")
+                                    self._emit("ld", f"({param_asm}),a")
                                     continue
                             except (ValueError, TypeError):
                                 pass
 
                     arg_type = self._gen_expr(arg)
                     if param_type == DataType.BYTE or arg_type == DataType.BYTE:
-                        # BYTE param - ensure value is in A, use STA
+                        # BYTE param - ensure value is in A, use LD (addr),A
                         if arg_type == DataType.ADDRESS:
-                            self._emit("MOV", "A,L")
-                        self._emit("STA", param_asm)
+                            self._emit("ld", "a,l")
+                        self._emit("ld", f"({param_asm}),a")
                     else:
-                        # ADDRESS param - use SHLD
-                        self._emit("SHLD", param_asm)
+                        # ADDRESS param - use LD (addr),HL
+                        self._emit("ld", f"({param_asm}),hl")
 
         # Call the procedure
         if isinstance(stmt.callee, Identifier):
-            self._emit("CALL", call_name)
+            self._emit("call", call_name)
         else:
             # Indirect call through address
             self._gen_expr(stmt.callee)
-            self._emit("PCHL")
+            self._emit("jp", "(hl)")
 
         # Clean up stack (caller cleanup) - only for stack-based calls
         if use_stack and stmt.args:
             stack_bytes = len(stmt.args) * 2
             if stack_bytes == 2:
-                self._emit("POP", "D")  # Dummy pop
+                self._emit("pop", "de")  # Dummy pop
             elif stack_bytes == 4:
-                self._emit("POP", "D")
-                self._emit("POP", "D")
+                self._emit("pop", "de")
+                self._emit("pop", "de")
             elif stack_bytes <= 8:
                 for _ in range(len(stmt.args)):
-                    self._emit("POP", "D")
+                    self._emit("pop", "de")
             else:
                 # Adjust stack pointer directly
-                self._emit("LXI", f"D,{stack_bytes}")
-                self._emit("DAD", "SP")
-                self._emit("SPHL")
+                self._emit("ld", f"de,{stack_bytes}")
+                self._emit("add", "hl,sp")
+                self._emit("ld", "sp,hl")
 
     def _gen_return(self, stmt: ReturnStmt) -> None:
         """Generate code for RETURN statement."""
@@ -2095,11 +2092,11 @@ class CodeGenerator:
             if skip_load:
                 # A already contains the return value - just return
                 pass
-            # Optimize: if returning BYTE and value is a small constant, use MVI A directly
+            # Optimize: if returning BYTE and value is a small constant, use ld a,n directly
             elif (self.current_proc_decl and
                 self.current_proc_decl.return_type == DataType.BYTE and
                 isinstance(stmt.value, NumberLiteral) and stmt.value.value <= 255):
-                self._emit("MVI", f"A,{self._format_number(stmt.value.value)}")
+                self._emit("ld", f"a,{self._format_number(stmt.value.value)}")
             else:
                 result_type = self._gen_expr(stmt.value)
                 # Return value is in A (BYTE) or HL (ADDRESS)
@@ -2108,36 +2105,36 @@ class CodeGenerator:
                     self.current_proc_decl.return_type == DataType.BYTE and
                     result_type == DataType.ADDRESS):
                     # Convert HL to A: non-zero HL -> 0FFH (TRUE), zero HL -> 0 (FALSE)
-                    self._emit("MOV", "A,L")
-                    self._emit("ORA", "H")
+                    self._emit("ld", "a,l")
+                    self._emit("or", "h")
                     # Now A is non-zero if true, zero if false
                     # For proper PL/M TRUE (0FFH), normalize:
                     end_label = self._new_label("RETE")
-                    self._emit("JZ", end_label)
-                    self._emit("MVI", "A,0FFH")
+                    self._emit("jp", f"z,{end_label}")
+                    self._emit("ld", "a,0ffh")
                     self._emit_label(end_label)
                 # If procedure returns ADDRESS but we have BYTE, zero-extend A to HL
                 elif (self.current_proc_decl and
                       self.current_proc_decl.return_type == DataType.ADDRESS and
                       result_type == DataType.BYTE):
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
 
         if self.current_proc_decl and self.current_proc_decl.interrupt_num is not None:
             # Interrupt handler return
-            self._emit("POP", "H")
-            self._emit("POP", "D")
-            self._emit("POP", "B")
-            self._emit("POP", "PSW")
-            self._emit("EI")
-            self._emit("RET")
+            self._emit("pop", "hl")
+            self._emit("pop", "de")
+            self._emit("pop", "bc")
+            self._emit("pop", "af")
+            self._emit("ei")
+            self._emit("ret")
         elif self.current_proc_decl and self.current_proc_decl.is_reentrant:
             # Reentrant procedure return - restore frame pointer
-            self._emit("LD", "SP,IX")
-            self._emit("POP", "IX")
-            self._emit("RET")
+            self._emit("ld", "sp,ix")
+            self._emit("pop", "ix")
+            self._emit("ret")
         else:
-            self._emit("RET")
+            self._emit("ret")
 
     def _gen_if(self, stmt: IfStmt) -> None:
         """Generate code for IF statement."""
@@ -2158,13 +2155,13 @@ class CodeGenerator:
             result_type = self._gen_expr(stmt.condition)
             # Test result - BYTE in A, ADDRESS in HL
             if result_type == DataType.BYTE:
-                # Value is in A - just ORA A to set flags
-                self._emit("ORA", "A")
+                # Value is in A - just or a to set flags
+                self._emit("or", "a")
             else:
                 # Value is in HL - test if zero
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")  # A = L | H
-            self._emit("JZ", false_target)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")  # A = L | H
+            self._emit("jp", f"z,{false_target}")
 
         self.current_if_stmt = old_if_stmt  # Restore before generating body
 
@@ -2172,7 +2169,7 @@ class CodeGenerator:
         self._gen_stmt(stmt.then_stmt)
 
         if stmt.else_stmt:
-            self._emit("JMP", end_label)
+            self._emit("jp", end_label)
             self._emit_label(else_label)
             self._gen_stmt(stmt.else_stmt)
 
@@ -2187,7 +2184,7 @@ class CodeGenerator:
         if isinstance(condition, NumberLiteral):
             if condition.value == 0:
                 # Always false - unconditional jump
-                self._emit("JMP", false_label)
+                self._emit("jp", false_label)
             # If non-zero (always true), no code needed - just fall through
             return True
 
@@ -2196,26 +2193,26 @@ class CodeGenerator:
             cond_type = self._get_expr_type(condition)
             if cond_type == DataType.BYTE:
                 self._gen_expr(condition)  # Loads into A
-                self._emit("ORA", "A")     # Set Z flag
-                self._emit("JZ", false_label)
+                self._emit("or", "a")     # Set Z flag
+                self._emit("jp", f"z,{false_label}")
                 return True
             else:
                 self._gen_expr(condition)  # Loads into HL
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
                 return True
 
         # Handle function call - evaluate and test result
         if isinstance(condition, CallExpr):
             cond_type = self._gen_call_expr(condition)
             if cond_type == DataType.BYTE:
-                self._emit("ORA", "A")     # Set Z flag (result in A)
-                self._emit("JZ", false_label)
+                self._emit("or", "a")     # Set Z flag (result in A)
+                self._emit("jp", f"z,{false_label}")
             else:
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
             return True
 
         # Handle NOT - invert the condition
@@ -2234,15 +2231,15 @@ class CodeGenerator:
             if not self._gen_condition_jump_false(condition.left, false_label):
                 # Fallback: evaluate left, test for zero
                 self._gen_expr(condition.left)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
             # If right is false, whole AND is false -> jump to false_label
             if not self._gen_condition_jump_false(condition.right, false_label):
                 self._gen_expr(condition.right)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
             return True
 
         # Handle short-circuit OR: (a OR b) is false only if BOTH a and b are false
@@ -2252,15 +2249,15 @@ class CodeGenerator:
             if not self._gen_condition_jump_true(condition.left, true_label):
                 # Fallback: evaluate left, test for non-zero
                 self._gen_expr(condition.left)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
             # If right is false, whole OR is false -> jump to false_label
             if not self._gen_condition_jump_false(condition.right, false_label):
                 self._gen_expr(condition.right)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
             self._emit_label(true_label)
             return True
 
@@ -2273,7 +2270,7 @@ class CodeGenerator:
         both_bytes = (left_type == DataType.BYTE and right_type == DataType.BYTE)
 
         if both_bytes:
-            # Byte comparison with constant using CPI
+            # Byte comparison with constant using cp n
             const_val = None
             if isinstance(condition.right, NumberLiteral) and condition.right.value <= 255:
                 const_val = condition.right.value
@@ -2282,15 +2279,15 @@ class CodeGenerator:
 
             if const_val is not None:
                 self._gen_expr(condition.left)  # Result in A
-                self._emit("CPI", self._format_number(const_val))
+                self._emit("cp", self._format_number(const_val))
                 self._emit_jump_on_false(op, false_label)
                 return True
             else:
                 # Byte-to-byte comparison - load right first for efficient SUB
                 self._gen_expr(condition.right)  # Result in A
-                self._emit("MOV", "B,A")  # Save right
+                self._emit("ld", "b,a")  # Save right
                 self._gen_expr(condition.left)  # Result in A (left)
-                self._emit("SUB", "B")    # A = left - right, flags set
+                self._emit("sub", "b")    # A = left - right, flags set
                 self._emit_jump_on_false(op, false_label)
                 return True
         else:
@@ -2304,43 +2301,43 @@ class CodeGenerator:
                 # Evaluate complex right first, save to DE, then simple left
                 self._gen_expr(condition.right)
                 if right_type == DataType.BYTE:
-                    self._emit("MOV", "E,A")
-                    self._emit("MVI", "D,0")
+                    self._emit("ld", "e,a")
+                    self._emit("ld", "d,0")
                 else:
-                    self._emit("XCHG")  # DE = right
+                    self._emit("ex", "de,hl")  # DE = right
                 # Evaluate left - DE is preserved
                 self._gen_expr(condition.left)
                 if left_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
                 # Now: HL = left, DE = right (no PUSH/POP needed!)
             else:
                 # Either left is complex, or right is simple - use standard approach
                 actual_left_type = self._gen_expr(condition.left)
                 if actual_left_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
-                self._emit("PUSH", "H")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("push", "hl")
 
                 actual_right_type = self._gen_expr(condition.right)
                 if actual_right_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
 
-                self._emit("XCHG")  # DE = right
-                self._emit("POP", "H")  # HL = left
+                self._emit("ex", "de,hl")  # DE = right
+                self._emit("pop", "hl")  # HL = left
 
             # 16-bit subtract: HL = HL - DE
             self._emit_sub16()
 
             # For EQ/NE, check if result is zero
             if op in (BinaryOp.EQ, BinaryOp.NE):
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
                 if op == BinaryOp.EQ:
-                    self._emit("JNZ", false_label)  # If not zero, condition is false
+                    self._emit("jp", f"nz,{false_label}")  # If not zero, condition is false
                 else:
-                    self._emit("JZ", false_label)   # If zero, condition is false
+                    self._emit("jp", f"z,{false_label}")   # If zero, condition is false
                 return True
             else:
                 # For LT/GT/LE/GE with 16-bit, use sign + zero flags
@@ -2363,7 +2360,7 @@ class CodeGenerator:
         if isinstance(condition, NumberLiteral):
             if condition.value != 0:
                 # Always true - unconditional jump
-                self._emit("JMP", true_label)
+                self._emit("jp", true_label)
             # If zero (always false), no code needed - just fall through
             return True
 
@@ -2372,26 +2369,26 @@ class CodeGenerator:
             cond_type = self._get_expr_type(condition)
             if cond_type == DataType.BYTE:
                 self._gen_expr(condition)  # Loads into A
-                self._emit("ORA", "A")     # Set Z flag
-                self._emit("JNZ", true_label)
+                self._emit("or", "a")     # Set Z flag
+                self._emit("jp", f"nz,{true_label}")
                 return True
             else:
                 self._gen_expr(condition)  # Loads into HL
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
                 return True
 
         # Handle function call - evaluate and test result
         if isinstance(condition, CallExpr):
             cond_type = self._gen_call_expr(condition)
             if cond_type == DataType.BYTE:
-                self._emit("ORA", "A")     # Set Z flag (result in A)
-                self._emit("JNZ", true_label)
+                self._emit("or", "a")     # Set Z flag (result in A)
+                self._emit("jp", f"nz,{true_label}")
             else:
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
             return True
 
         # Handle NOT - invert the condition
@@ -2409,15 +2406,15 @@ class CodeGenerator:
             # If left is true, whole OR is true -> jump to true_label
             if not self._gen_condition_jump_true(condition.left, true_label):
                 self._gen_expr(condition.left)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
             # If right is true, whole OR is true -> jump to true_label
             if not self._gen_condition_jump_true(condition.right, true_label):
                 self._gen_expr(condition.right)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
             return True
 
         # Handle short-circuit AND: (a AND b) is true only if BOTH are true
@@ -2426,15 +2423,15 @@ class CodeGenerator:
             # If left is false, skip right evaluation
             if not self._gen_condition_jump_false(condition.left, false_label):
                 self._gen_expr(condition.left)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JZ", false_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"z,{false_label}")
             # If right is true, AND is true
             if not self._gen_condition_jump_true(condition.right, true_label):
                 self._gen_expr(condition.right)
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
-                self._emit("JNZ", true_label)
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
+                self._emit("jp", f"nz,{true_label}")
             self._emit_label(false_label)
             return True
 
@@ -2449,42 +2446,42 @@ class CodeGenerator:
         if both_bytes:
             if isinstance(condition.right, NumberLiteral) and condition.right.value <= 255:
                 self._gen_expr(condition.left)
-                self._emit("CPI", self._format_number(condition.right.value))
+                self._emit("cp", self._format_number(condition.right.value))
                 self._emit_jump_on_true(op, true_label)
                 return True
             else:
                 # Byte-to-byte comparison - load right first for efficient SUB
                 self._gen_expr(condition.right)
-                self._emit("MOV", "B,A")  # Save right
+                self._emit("ld", "b,a")  # Save right
                 self._gen_expr(condition.left)
-                self._emit("SUB", "B")    # A = left - right
+                self._emit("sub", "b")    # A = left - right
                 self._emit_jump_on_true(op, true_label)
                 return True
         else:
             # 16-bit comparison
             self._gen_expr(condition.left)
             if left_type == DataType.BYTE:
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
 
             self._gen_expr(condition.right)
             if right_type == DataType.BYTE:
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
 
-            self._emit("XCHG")
-            self._emit("POP", "H")
+            self._emit("ex", "de,hl")
+            self._emit("pop", "hl")
 
             self._emit_sub16()
 
             if op in (BinaryOp.EQ, BinaryOp.NE):
-                self._emit("MOV", "A,L")
-                self._emit("ORA", "H")
+                self._emit("ld", "a,l")
+                self._emit("or", "h")
                 if op == BinaryOp.EQ:
-                    self._emit("JZ", true_label)
+                    self._emit("jp", f"z,{true_label}")
                 else:
-                    self._emit("JNZ", true_label)
+                    self._emit("jp", f"nz,{true_label}")
                 return True
             else:
                 self._emit_jump_on_true_16bit(op, true_label)
@@ -2495,22 +2492,22 @@ class CodeGenerator:
     def _emit_jump_on_true(self, op: BinaryOp, true_label: str) -> None:
         """Emit jump to true_label if comparison result is true (8-bit compare)."""
         if op == BinaryOp.EQ:
-            self._emit("JZ", true_label)
+            self._emit("jp", f"z,{true_label}")
         elif op == BinaryOp.NE:
-            self._emit("JNZ", true_label)
+            self._emit("jp", f"nz,{true_label}")
         elif op == BinaryOp.LT:
-            self._emit("JC", true_label)
+            self._emit("jp", f"c,{true_label}")
         elif op == BinaryOp.GE:
-            self._emit("JNC", true_label)
+            self._emit("jp", f"nc,{true_label}")
         elif op == BinaryOp.GT:
             skip = self._new_label("SKIP")
-            self._emit("JC", skip)
-            self._emit("JZ", skip)
-            self._emit("JMP", true_label)
+            self._emit("jp", f"c,{skip}")
+            self._emit("jp", f"z,{skip}")
+            self._emit("jp", true_label)
             self._emit_label(skip)
         elif op == BinaryOp.LE:
-            self._emit("JC", true_label)
-            self._emit("JZ", true_label)
+            self._emit("jp", f"c,{true_label}")
+            self._emit("jp", f"z,{true_label}")
 
     def _emit_jump_on_true_16bit(self, op: BinaryOp, true_label: str) -> None:
         """Emit jump to true_label for 16-bit unsigned comparison.
@@ -2519,47 +2516,47 @@ class CodeGenerator:
         """
         if op == BinaryOp.LT:
             # left < right: true if carry set
-            self._emit("JC", true_label)
+            self._emit("jp", f"c,{true_label}")
         elif op == BinaryOp.GE:
             # left >= right: true if no carry
-            self._emit("JNC", true_label)
+            self._emit("jp", f"nc,{true_label}")
         elif op == BinaryOp.GT:
             # left > right: true if no carry AND result != 0
             skip = self._new_label("SKIP")
-            self._emit("JC", skip)  # left < right -> not greater, skip
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JNZ", true_label)  # not equal -> greater
+            self._emit("jp", f"c,{skip}")  # left < right -> not greater, skip
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"nz,{true_label}")  # not equal -> greater
             self._emit_label(skip)
         elif op == BinaryOp.LE:
             # left <= right: true if carry OR result == 0
-            self._emit("JC", true_label)  # left < right -> true
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JZ", true_label)  # left == right -> true
+            self._emit("jp", f"c,{true_label}")  # left < right -> true
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"z,{true_label}")  # left == right -> true
 
     def _emit_jump_on_false(self, op: BinaryOp, false_label: str) -> None:
         """Emit jump to false_label if comparison result is false (8-bit compare)."""
-        # After CPI or SUB, flags reflect left - right
+        # After cp n or SUB, flags reflect left - right
         if op == BinaryOp.EQ:
-            self._emit("JNZ", false_label)  # Jump if not equal (Z=0)
+            self._emit("jp", f"nz,{false_label}")  # Jump if not equal (Z=0)
         elif op == BinaryOp.NE:
-            self._emit("JZ", false_label)   # Jump if equal (Z=1)
+            self._emit("jp", f"z,{false_label}")   # Jump if equal (Z=1)
         elif op == BinaryOp.LT:
-            self._emit("JNC", false_label)  # Jump if not less (C=0)
+            self._emit("jp", f"nc,{false_label}")  # Jump if not less (C=0)
         elif op == BinaryOp.GE:
-            self._emit("JC", false_label)   # Jump if less (C=1)
+            self._emit("jp", f"c,{false_label}")   # Jump if less (C=1)
         elif op == BinaryOp.GT:
             # Greater: not less AND not equal -> C=0 AND Z=0
-            self._emit("JC", false_label)   # Jump if less
-            self._emit("JZ", false_label)   # Jump if equal
+            self._emit("jp", f"c,{false_label}")   # Jump if less
+            self._emit("jp", f"z,{false_label}")   # Jump if equal
         elif op == BinaryOp.LE:
             # Less or equal: C=1 OR Z=1
             # Jump if greater (C=0 AND Z=0)
             skip = self._new_label("SKIP")
-            self._emit("JC", skip)   # Less -> condition true, skip jump
-            self._emit("JZ", skip)   # Equal -> condition true, skip jump
-            self._emit("JMP", false_label)  # Greater -> condition false
+            self._emit("jp", f"c,{skip}")   # Less -> condition true, skip jump
+            self._emit("jp", f"z,{skip}")   # Equal -> condition true, skip jump
+            self._emit("jp", false_label)  # Greater -> condition false
             self._emit_label(skip)
 
     def _emit_jump_on_false_16bit(self, op: BinaryOp, false_label: str) -> None:
@@ -2571,27 +2568,27 @@ class CodeGenerator:
         if op == BinaryOp.LT:
             # left < right: true if carry set (borrow occurred)
             # Jump to false if NO carry (left >= right)
-            self._emit("JNC", false_label)
+            self._emit("jp", f"nc,{false_label}")
         elif op == BinaryOp.GE:
             # left >= right: true if no carry
             # Jump to false if carry set (left < right)
-            self._emit("JC", false_label)
+            self._emit("jp", f"c,{false_label}")
         elif op == BinaryOp.GT:
             # left > right: true if no carry AND result != 0
             # Jump to false if carry OR result == 0
-            self._emit("JC", false_label)  # left < right -> false
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JZ", false_label)  # left == right -> false
+            self._emit("jp", f"c,{false_label}")  # left < right -> false
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"z,{false_label}")  # left == right -> false
         elif op == BinaryOp.LE:
             # left <= right: true if carry OR result == 0
             # Jump to false if no carry AND result != 0
             skip = self._new_label("SKIP")
-            self._emit("JC", skip)  # left < right -> true, skip to end
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JZ", skip)  # left == right -> true
-            self._emit("JMP", false_label)  # left > right -> false
+            self._emit("jp", f"c,{skip}")  # left < right -> true, skip to end
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"z,{skip}")  # left == right -> true
+            self._emit("jp", false_label)  # left > right -> false
             self._emit_label(skip)
 
     def _gen_do_block(self, stmt: DoBlock) -> None:
@@ -2691,22 +2688,22 @@ class CodeGenerator:
         # NOTE: This optimization is disabled because it doesn't save code -
         # the existing _gen_condition_jump_false already handles this efficiently.
         # For the optimization to help, we'd need to keep the counter in a register
-        # and avoid the STA inside the loop, which requires data flow analysis to
+        # and avoid the LD (addr),A inside the loop, which requires data flow analysis to
         # confirm the counter isn't used in the loop body.
         counter_info = None  # self._is_byte_counter_loop(stmt.condition)
         if counter_info:
             var_asm, _ = counter_info
             # Optimized loop: keep counter in C register (C is less commonly used than B)
             # Load counter into C at start
-            self._emit("LDA", var_asm)
-            self._emit("MOV", "C,A")
+            self._emit("ld", f"a,({var_asm})")
+            self._emit("ld", "c,a")
 
             self._emit_label(loop_label)
             # Decrement C and check for 0xFF (wrap from 0 to 255)
-            self._emit("DCR", "C")
-            self._emit("MOV", "A,C")
-            self._emit("CPI", "0FFH")
-            self._emit("JZ", end_label)
+            self._emit("dec", "c")
+            self._emit("ld", "a,c")
+            self._emit("cp", "0FFH")
+            self._emit("jp", f"z,{end_label}")
 
             # Mark that C is being used as loop counter
             old_loop_reg = getattr(self, 'loop_counter_reg', None)
@@ -2719,12 +2716,12 @@ class CodeGenerator:
             # Restore loop register tracking
             self.loop_counter_reg = old_loop_reg
 
-            self._emit("JMP", loop_label)
+            self._emit("jp", loop_label)
             self._emit_label(end_label)
 
             # Store C back to memory (in case it's used after loop)
-            self._emit("MOV", "A,C")
-            self._emit("STA", var_asm)
+            self._emit("ld", "a,c")
+            self._emit("ld", f"({var_asm}),a")
         else:
             self._emit_label(loop_label)
 
@@ -2733,17 +2730,17 @@ class CodeGenerator:
                 result_type = self._gen_expr(stmt.condition)
                 # Test result - BYTE in A, ADDRESS in HL
                 if result_type == DataType.BYTE:
-                    self._emit("ORA", "A")
+                    self._emit("or", "a")
                 else:
-                    self._emit("MOV", "A,L")
-                    self._emit("ORA", "H")
-                self._emit("JZ", end_label)
+                    self._emit("ld", "a,l")
+                    self._emit("or", "h")
+                self._emit("jp", f"z,{end_label}")
 
             # Loop body
             for s in stmt.stmts:
                 self._gen_stmt(s)
 
-            self._emit("JMP", loop_label)
+            self._emit("jp", loop_label)
             self._emit_label(end_label)
 
         self.loop_stack.pop()
@@ -2787,7 +2784,7 @@ class CodeGenerator:
             if isinstance(stmt.bound, NumberLiteral):
                 iter_count = stmt.bound.value + 1
                 if iter_count <= 255:
-                    self._emit("MVI", f"B,{self._format_number(iter_count)}")
+                    self._emit("ld", f"b,{self._format_number(iter_count)}")
                 else:
                     # Too many iterations for DJNZ
                     pass  # Fall through to regular loop
@@ -2795,24 +2792,24 @@ class CodeGenerator:
                 # Variable bound: A = bound; A++; B = A
                 bound_type = self._gen_expr(stmt.bound)
                 if bound_type == DataType.ADDRESS:
-                    self._emit("MOV", "A,L")
-                self._emit("INR", "A")  # A = bound + 1 = iteration count
-                self._emit("MOV", "B,A")  # B = iteration count
+                    self._emit("ld", "a,l")
+                self._emit("inc", "a")  # A = bound + 1 = iteration count
+                self._emit("ld", "b,a")  # B = iteration count
 
             # Only proceed with B-counter loop if we set up B
             if isinstance(stmt.bound, NumberLiteral) and stmt.bound.value + 1 <= 255:
                 # Loop body - save B since body may clobber it
                 self._emit_label(loop_label)
-                self._emit("PUSH", "B")
+                self._emit("push", "bc")
                 for s in stmt.stmts:
                     self._gen_stmt(s)
-                self._emit("POP", "B")
+                self._emit("pop", "bc")
 
                 # Decrement B and jump if not zero
-                # Use DCR B; JNZ instead of DJNZ - peephole will convert to DJNZ if in range
+                # Use dec b; jp nz instead of DJNZ - peephole will convert to DJNZ if in range
                 self._emit_label(incr_label)
-                self._emit("DCR", "B")
-                self._emit("JNZ", loop_label)
+                self._emit("dec", "b")
+                self._emit("jp", f"nz,{loop_label}")
 
                 self._emit_label(end_label)
                 self.loop_stack.pop()
@@ -2821,22 +2818,22 @@ class CodeGenerator:
                 # Variable bound case - we set up B above
                 # But need to handle the case where bound might be 255 (iter count = 256 = 0 in byte)
                 # Skip loop if B is 0 (this handles bound = 255 case)
-                self._emit("MOV", "A,B")
-                self._emit("ORA", "A")
-                self._emit("JZ", end_label)  # Skip if iteration count is 0
+                self._emit("ld", "a,b")
+                self._emit("or", "a")
+                self._emit("jp", f"z,{end_label}")  # Skip if iteration count is 0
 
                 # Loop body - save B since body may clobber it
                 self._emit_label(loop_label)
-                self._emit("PUSH", "B")
+                self._emit("push", "bc")
                 for s in stmt.stmts:
                     self._gen_stmt(s)
-                self._emit("POP", "B")
+                self._emit("pop", "bc")
 
                 # Decrement B and jump if not zero
-                # Use DCR B; JNZ instead of DJNZ - peephole will convert to DJNZ if in range
+                # Use dec b; jp nz instead of DJNZ - peephole will convert to DJNZ if in range
                 self._emit_label(incr_label)
-                self._emit("DCR", "B")
-                self._emit("JNZ", loop_label)
+                self._emit("dec", "b")
+                self._emit("jp", f"nz,{loop_label}")
 
                 self._emit_label(end_label)
                 self.loop_stack.pop()
@@ -2855,11 +2852,11 @@ class CodeGenerator:
             # Initialize: load start into A, store to index
             start_type = self._gen_expr(stmt.start)
             if start_type == DataType.ADDRESS:
-                self._emit("MOV", "A,L")
+                self._emit("ld", "a,l")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Jump to test
-            self._emit("JMP", test_label)
+            self._emit("jp", test_label)
 
             # Loop body
             self._emit_label(loop_label)
@@ -2869,15 +2866,15 @@ class CodeGenerator:
             # Decrement
             self._emit_label(incr_label)
             self._gen_load(stmt.index_var)  # A = index
-            self._emit("DEC", "A")
+            self._emit("dec", "a")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Test: if A >= 0 (not wrapped), continue
             # After DEC, if result is not negative (i.e., >= 0), continue
             self._emit_label(test_label)
             self._gen_load(stmt.index_var)  # A = index
-            self._emit("OR", "A")  # Set flags
-            self._emit("JP", loop_label)  # Jump if positive (bit 7 clear)
+            self._emit("or", "a")  # Set flags
+            self._emit("jp", f"p,{loop_label}")  # Jump if positive (bit 7 clear)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -2890,11 +2887,11 @@ class CodeGenerator:
             # Initialize index variable
             start_type = self._gen_expr(stmt.start)
             if start_type == DataType.ADDRESS:
-                self._emit("MOV", "A,L")
+                self._emit("ld", "a,l")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Jump to test
-            self._emit("JMP", test_label)
+            self._emit("jp", test_label)
 
             # Loop body
             self._emit_label(loop_label)
@@ -2905,18 +2902,18 @@ class CodeGenerator:
             self._emit_label(incr_label)
             self._gen_load(stmt.index_var)  # A = index
             if step_val == 1:
-                self._emit("INC", "A")
+                self._emit("inc", "a")
             elif step_val == -1 or step_val == 0xFF:
-                self._emit("DEC", "A")
+                self._emit("dec", "a")
             else:
-                self._emit("ADD", f"A,{self._format_number(step_val & 0xFF)}")
+                self._emit("add", f"a,{self._format_number(step_val & 0xFF)}")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Test condition: compare index with bound
             self._emit_label(test_label)
             self._gen_load(stmt.index_var)  # A = index
-            self._emit("CP", self._format_number(bound_val + 1))  # Compare with bound+1
-            self._emit("JR", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
+            self._emit("cp", self._format_number(bound_val + 1))  # Compare with bound+1
+            self._emit("jr", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -2927,11 +2924,11 @@ class CodeGenerator:
             # Initialize index variable as BYTE
             start_type = self._gen_expr(stmt.start)
             if start_type == DataType.ADDRESS:
-                self._emit("MOV", "A,L")
+                self._emit("ld", "a,l")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Jump to test
-            self._emit("JMP", test_label)
+            self._emit("jp", test_label)
 
             # Loop body
             self._emit_label(loop_label)
@@ -2942,11 +2939,11 @@ class CodeGenerator:
             self._emit_label(incr_label)
             self._gen_load(stmt.index_var)  # A = index
             if step_val == 1:
-                self._emit("INC", "A")
+                self._emit("inc", "a")
             elif step_val == -1 or step_val == 0xFF:
-                self._emit("DEC", "A")
+                self._emit("dec", "a")
             else:
-                self._emit("ADD", f"A,{self._format_number(step_val & 0xFF)}")
+                self._emit("add", f"a,{self._format_number(step_val & 0xFF)}")
             self._gen_store(stmt.index_var, DataType.BYTE)
 
             # Test condition: compare index with bound variable
@@ -2954,13 +2951,13 @@ class CodeGenerator:
             self._emit_label(test_label)
             bound_result = self._gen_expr(stmt.bound)  # A = bound (or HL if ADDRESS)
             if bound_result == DataType.ADDRESS:
-                self._emit("MOV", "A,L")  # Get low byte if ADDRESS
-            self._emit("INR", "A")  # A = bound + 1
-            self._emit("MOV", "B,A")  # B = bound + 1
+                self._emit("ld", "a,l")  # Get low byte if ADDRESS
+            self._emit("inc", "a")  # A = bound + 1
+            self._emit("ld", "b,a")  # B = bound + 1
             self._gen_load(stmt.index_var)  # A = index
-            # CP B computes A - B (index - (bound+1)), sets C if index < bound+1
-            self._emit("CP", "B")  # Compare index with bound+1
-            self._emit("JR", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
+            # cp b computes a - b (index - (bound+1)), sets C if index < bound+1
+            self._emit("cp", "B")  # Compare index with bound+1
+            self._emit("jr", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -2972,7 +2969,7 @@ class CodeGenerator:
         self._gen_store(stmt.index_var, DataType.ADDRESS)
 
         # Jump to test
-        self._emit("JMP", test_label)
+        self._emit("jp", test_label)
 
         # Loop body
         self._emit_label(loop_label)
@@ -2983,18 +2980,18 @@ class CodeGenerator:
         self._emit_label(incr_label)
         self._gen_load(stmt.index_var)
         if step_val == 1:
-            self._emit("INX", "H")
+            self._emit("inc", "hl")
         elif step_val == -1 or step_val == 0xFFFF:
-            self._emit("DCX", "H")
+            self._emit("dec", "hl")
         else:
-            self._emit("LXI", f"D,{self._format_number(step_val)}")
-            self._emit("DAD", "D")
+            self._emit("ld", f"de,{self._format_number(step_val)}")
+            self._emit("add", "hl,de")
         self._gen_store(stmt.index_var, DataType.ADDRESS)
 
         # Test condition
         self._emit_label(test_label)
         self._gen_load(stmt.index_var)
-        self._emit("XCHG")  # DE = index
+        self._emit("ex", "de,hl")  # DE = index
         self._gen_expr(stmt.bound)  # HL = bound
 
         # Compare: if index > bound, exit (for positive step)
@@ -3002,7 +2999,7 @@ class CodeGenerator:
         self._emit_sub16()
 
         # If no borrow (NC), bound >= index, continue
-        self._emit("JNC", loop_label)
+        self._emit("jp", f"nc,{loop_label}")
 
         self._emit_label(end_label)
         self.loop_stack.pop()
@@ -3025,41 +3022,41 @@ class CodeGenerator:
             # Sequential comparisons - selector can stay in A for BYTE
             if selector_type == DataType.ADDRESS:
                 # ADDRESS selector is in HL, move L to A for comparisons
-                self._emit("MOV", "A,L")
+                self._emit("ld", "a,l")
             # else: BYTE selector already in A
             for i, label in enumerate(case_labels):
-                self._emit("CPI", str(i))
-                self._emit("JZ", label)
-            self._emit("JMP", end_label)  # Default: skip all
+                self._emit("cp", str(i))
+                self._emit("jp", f"z,{label}")
+            self._emit("jp", end_label)  # Default: skip all
         else:
             # Jump table approach - needs selector in HL
             if selector_type == DataType.BYTE:
                 # Extend BYTE in A to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
             table_label = self._new_label("JMPTBL")
-            self._emit("DAD", "H")  # HL = HL * 2 (addresses are 2 bytes)
-            self._emit("LXI", f"D,{table_label}")
-            self._emit("DAD", "D")  # HL = table + index*2
-            self._emit("MOV", "E,M")
-            self._emit("INX", "H")
-            self._emit("MOV", "D,M")
-            self._emit("XCHG")
-            self._emit("PCHL")
+            self._emit("add", "hl,hl")  # HL = HL * 2 (addresses are 2 bytes)
+            self._emit("ld", f"de,{table_label}")
+            self._emit("add", "hl,de")  # HL = table + index*2
+            self._emit("ld", "e,(hl)")
+            self._emit("inc", "hl")
+            self._emit("ld", "d,(hl)")
+            self._emit("ex", "de,hl")
+            self._emit("jp", "(hl)")
 
-            # Jump table (in code segment, right after the PCHL)
+            # Jump table (in code segment, right after the jp (hl))
             self._emit_label(table_label)
             for label in case_labels:
-                self.output.append(AsmLine(opcode="DW", operands=label))
+                self.output.append(AsmLine(opcode="dw", operands=label))
 
         # Generate each case
         for i, (case_stmts, label) in enumerate(zip(stmt.cases, case_labels)):
             self._emit_label(label)
             for s in case_stmts:
                 self._gen_stmt(s)
-            # Only emit JMP end_label if last statement doesn't transfer control
+            # Only emit JP end_label if last statement doesn't transfer control
             if not self._stmt_transfers_control(case_stmts[-1] if case_stmts else None):
-                self._emit("JMP", end_label)
+                self._emit("jp", end_label)
 
         self._emit_label(end_label)
 
@@ -3193,20 +3190,20 @@ class CodeGenerator:
     def _gen_simple_to_de(self, expr: Expr) -> None:
         """Load a simple address expression directly into DE."""
         if isinstance(expr, NumberLiteral):
-            self._emit("LXI", f"D,{self._format_number(expr.value)}")
+            self._emit("ld", f"de,{self._format_number(expr.value)}")
         elif isinstance(expr, Identifier):
             name = expr.name
             # Handle built-in MEMORY array
             if name.upper() == "MEMORY":
                 self.needs_end_symbol = True
-                self._emit("LXI", "D,__END__")
+                self._emit("ld", "de,__END__")
                 return
             # Check for LITERALLY macro
             if name in self.literal_macros:
                 macro_val = self.literal_macros[name]
                 try:
                     val = self._parse_plm_number(macro_val)
-                    self._emit("LXI", f"D,{self._format_number(val)}")
+                    self._emit("ld", f"de,{self._format_number(val)}")
                     return
                 except ValueError:
                     name = macro_val  # Use expanded name
@@ -3214,20 +3211,20 @@ class CodeGenerator:
             sym = self.symbols.lookup(name)
             asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
             if sym:
-                # Arrays: load address of array (LXI D,label)
+                # Arrays: load address of array (ld de,label)
                 if sym.dimension:
-                    self._emit("LXI", f"D,{asm_name}")
+                    self._emit("ld", f"de,{asm_name}")
                 elif sym.data_type == DataType.BYTE:
                     # Byte variable - load and extend
-                    self._emit("LDA", asm_name)
-                    self._emit("MOV", "E,A")
-                    self._emit("MVI", "D,0")
+                    self._emit("ld", f"a,({asm_name})")
+                    self._emit("ld", "e,a")
+                    self._emit("ld", "d,0")
                 else:
                     # Address variable - load contents into DE
-                    self._emit("LDED", asm_name)  # Z80: LD DE,(addr)
+                    self._emit("ld", f"de,({asm_name})")  # Z80: ld de,(addr)
             else:
                 # Unknown - assume it's a label/address constant
-                self._emit("LXI", f"D,{asm_name}")
+                self._emit("ld", f"de,{asm_name}")
         elif isinstance(expr, LocationExpr):
             # .VAR - load address of variable
             if isinstance(expr.operand, Identifier):
@@ -3235,21 +3232,21 @@ class CodeGenerator:
                 # Handle built-in MEMORY array
                 if name.upper() == "MEMORY":
                     self.needs_end_symbol = True
-                    self._emit("LXI", "D,__END__")
+                    self._emit("ld", "de,__END__")
                     return
                 sym = self.symbols.lookup(name)
                 # Check for stack-based variable (reentrant procedure parameter/local)
                 if sym and sym.stack_offset is not None:
                     # Fall back to gen_expr which handles IX+offset
                     self._gen_expr(expr)
-                    self._emit("XCHG")
+                    self._emit("ex", "de,hl")
                     return
                 asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
-                self._emit("LXI", f"D,{asm_name}")
+                self._emit("ld", f"de,{asm_name}")
             else:
                 # Complex location - fall back to gen_expr
                 self._gen_expr(expr)
-                self._emit("XCHG")
+                self._emit("ex", "de,hl")
 
     def _expr_preserves_de(self, expr: Expr) -> bool:
         """
@@ -3257,9 +3254,9 @@ class CodeGenerator:
         Used to optimize binary expression evaluation order.
         """
         if isinstance(expr, NumberLiteral):
-            return True  # LXI H doesn't touch DE
+            return True  # ld hl,n doesn't touch DE
         if isinstance(expr, StringLiteral):
-            return True  # MVI A or LXI H doesn't touch DE
+            return True  # ld a,n or ld hl,n doesn't touch DE
         if isinstance(expr, Identifier):
             name = expr.name
             # Check for LITERALLY macro
@@ -3280,12 +3277,12 @@ class CodeGenerator:
                 # Procedure calls can touch any register
                 if sym.kind == SymbolKind.PROCEDURE:
                     return False
-                # BASED variables: LHLD then MOV - no DE touch
+                # BASED variables: ld hl,(addr) then LD - no DE touch
                 if sym.based_on:
                     return True
-                # Simple variable: LDA/LHLD - no DE touch
+                # Simple variable: ld a,(addr)/ld hl,(addr) - no DE touch
                 return True
-            # Unknown symbol - assume LHLD
+            # Unknown symbol - assume ld hl,(addr)
             return True
         if isinstance(expr, UnaryExpr):
             # Unary ops on simple expressions don't touch DE
@@ -3305,21 +3302,21 @@ class CodeGenerator:
             self.a_has_l = False
 
         if isinstance(expr, NumberLiteral):
-            # Use LXI H for all constants - more efficient (3 bytes vs 5 bytes)
+            # Use ld hl,n for all constants - more efficient (3 bytes vs 5 bytes)
             # Always return ADDRESS since value is in HL, not A
-            self._emit("LXI", f"H,{self._format_number(expr.value)}")
+            self._emit("ld", f"hl,{self._format_number(expr.value)}")
             return DataType.ADDRESS
 
         elif isinstance(expr, StringLiteral):
             # Single-character strings are byte values in PL/M-80
             if len(expr.value) == 1:
                 char_val = ord(expr.value[0])
-                self._emit("MVI", f"A,{self._format_number(char_val)}")
+                self._emit("ld", f"a,{self._format_number(char_val)}")
                 return DataType.BYTE
             # Load address of string
             label = self._new_string_label()
             self.string_literals.append((label, expr.value))
-            self._emit("LXI", f"H,{label}")
+            self._emit("ld", f"hl,{label}")
             return DataType.ADDRESS
 
         elif isinstance(expr, Identifier):
@@ -3351,13 +3348,13 @@ class CodeGenerator:
             for val in expr.values:
                 if isinstance(val, NumberLiteral):
                     self.data_segment.append(
-                        AsmLine(opcode="DB", operands=self._format_number(val.value))
+                        AsmLine(opcode="db", operands=self._format_number(val.value))
                     )
                 elif isinstance(val, StringLiteral):
                     self.data_segment.append(
-                        AsmLine(opcode="DB", operands=self._escape_string(val.value))
+                        AsmLine(opcode="db", operands=self._escape_string(val.value))
                     )
-            self._emit("LXI", f"H,{label}")
+            self._emit("ld", f"hl,{label}")
             return DataType.ADDRESS
 
         elif isinstance(expr, EmbeddedAssignExpr):
@@ -3408,9 +3405,9 @@ class CodeGenerator:
                 pass
             elif val_type == DataType.BYTE:
                 # Value is in A - save it in B, store, restore to A
-                self._emit("MOV", "B,A")
+                self._emit("ld", "b,a")
                 self._gen_store(expr.target, val_type)
-                self._emit("MOV", "A,B")
+                self._emit("ld", "a,b")
             else:
                 # Value is in HL
                 # Check if target is BYTE - _gen_store only touches A, not HL
@@ -3419,15 +3416,15 @@ class CodeGenerator:
                     target_sym = self.symbols.lookup(expr.target.name)
 
                 if target_sym and target_sym.data_type == DataType.BYTE:
-                    # BYTE target - _gen_store does MOV A,L; STA - HL preserved
+                    # BYTE target - _gen_store does ld a,L; LD (addr),A - HL preserved
                     # After this, A contains L
                     self._gen_store(expr.target, val_type)
                     self.a_has_l = True  # Signal that A already has L
                 else:
                     # ADDRESS target - need to preserve HL
-                    self._emit("PUSH", "H")
+                    self._emit("push", "hl")
                     self._gen_store(expr.target, val_type)
-                    self._emit("POP", "H")
+                    self._emit("pop", "hl")
             return val_type
 
         return DataType.ADDRESS
@@ -3440,8 +3437,8 @@ class CodeGenerator:
             # Handle built-in STACKPTR variable
             if name == "STACKPTR":
                 # Read stack pointer into HL
-                self._emit("LXI", "H,0")
-                self._emit("DAD", "SP")  # HL = HL + SP = SP
+                self._emit("ld", "hl,0")
+                self._emit("add", "hl,sp")  # HL = HL + SP = SP
                 return DataType.ADDRESS
 
             # Check for LITERALLY macro - expand recursively
@@ -3449,9 +3446,9 @@ class CodeGenerator:
                 macro_val = self.literal_macros[name]
                 try:
                     val = self._parse_plm_number(macro_val)
-                    # Use LXI H for all constants - more efficient (3 bytes vs 5 bytes)
+                    # Use ld hl,n for all constants - more efficient (3 bytes vs 5 bytes)
                     # Always return ADDRESS since value is in HL, not A
-                    self._emit("LXI", f"H,{self._format_number(val)}")
+                    self._emit("ld", f"hl,{self._format_number(val)}")
                     return DataType.ADDRESS
                 except ValueError:
                     # Non-numeric literal - recursively process as identifier
@@ -3476,7 +3473,7 @@ class CodeGenerator:
                 # If it's a procedure with no args, generate a call
                 if sym.kind == SymbolKind.PROCEDURE:
                     call_name = sym.asm_name if sym.asm_name else name
-                    self._emit("CALL", call_name)
+                    self._emit("call", call_name)
                     # Result is in A (for BYTE) or HL (for ADDRESS/untyped)
                     if sym.return_type == DataType.BYTE:
                         return DataType.BYTE
@@ -3485,12 +3482,12 @@ class CodeGenerator:
                 if sym.kind == SymbolKind.LITERAL:
                     try:
                         val = int(sym.literal_value or "0", 0)
-                        # Use LXI H for all constants - more efficient (3 bytes vs 5 bytes)
+                        # Use ld hl,n for all constants - more efficient (3 bytes vs 5 bytes)
                         # Always return ADDRESS since value is in HL, not A
-                        self._emit("LXI", f"H,{self._format_number(val)}")
+                        self._emit("ld", f"hl,{self._format_number(val)}")
                         return DataType.ADDRESS
                     except ValueError:
-                        self._emit("LXI", f"H,{sym.literal_value}")
+                        self._emit("ld", f"hl,{sym.literal_value}")
                         return DataType.ADDRESS
 
                 # Check for BASED variable
@@ -3498,46 +3495,46 @@ class CodeGenerator:
                     # Load the base pointer first - look up the actual asm_name
                     base_sym = self.symbols.lookup(sym.based_on)
                     base_asm_name = base_sym.asm_name if base_sym and base_sym.asm_name else sym.based_on
-                    self._emit("LHLD", base_asm_name)
+                    self._emit("ld", f"hl,({base_asm_name})")
                     # Then load from the pointed-to address
                     if sym.data_type == DataType.BYTE:
-                        self._emit("MOV", "A,M")
+                        self._emit("ld", "a,(hl)")
                         # Keep BYTE value in A register
                         return DataType.BYTE
                     else:
-                        self._emit("MOV", "E,M")
-                        self._emit("INX", "H")
-                        self._emit("MOV", "D,M")
-                        self._emit("XCHG")
+                        self._emit("ld", "e,(hl)")
+                        self._emit("inc", "hl")
+                        self._emit("ld", "d,(hl)")
+                        self._emit("ex", "de,hl")
                         return DataType.ADDRESS
 
                 # Check for stack-based variable (reentrant procedure local)
                 if sym.stack_offset is not None:
                     offset = sym.stack_offset
                     if sym.data_type == DataType.BYTE:
-                        self._emit("LD", f"A,(IX+{offset})")
+                        self._emit("ld", f"a,(ix+{offset})")
                         return DataType.BYTE
                     else:
-                        self._emit("LD", f"L,(IX+{offset})")
-                        self._emit("LD", f"H,(IX+{offset + 1})")
+                        self._emit("ld", f"l,(ix+{offset})")
+                        self._emit("ld", f"h,(ix+{offset + 1})")
                         return DataType.ADDRESS
 
                 if sym.data_type == DataType.BYTE:
-                    self._emit("LDA", asm_name)
+                    self._emit("ld", f"a,({asm_name})")
                     # Keep BYTE value in A register for efficient byte operations
                     return DataType.BYTE
                 else:
-                    self._emit("LHLD", asm_name)
+                    self._emit("ld", f"hl,({asm_name})")
                     return DataType.ADDRESS
 
             # Unknown symbol - assume ADDRESS
-            self._emit("LHLD", asm_name)
+            self._emit("ld", f"hl,({asm_name})")
             return DataType.ADDRESS
 
         else:
             # Complex lvalue - generate address then load
             self._gen_location(LocationExpr(operand=expr))
-            self._emit("MOV", "A,M")
+            self._emit("ld", "a,(hl)")
             # Keep BYTE value in A register
             return DataType.BYTE
 
@@ -3549,7 +3546,7 @@ class CodeGenerator:
             # Handle built-in STACKPTR variable
             if name == "STACKPTR":
                 # Set stack pointer from HL
-                self._emit("SPHL")  # SP = HL
+                self._emit("ld", "sp,hl")
                 return
 
             # Check for LITERALLY macro - expand recursively
@@ -3575,21 +3572,21 @@ class CodeGenerator:
                 if sym.data_type == DataType.BYTE:
                     # Value is in A (if val_type==BYTE) or L (if val_type==ADDRESS)
                     if val_type != DataType.BYTE:
-                        self._emit("MOV", "A,L")  # Get byte value into A
-                    self._emit("MOV", "B,A")  # Save value in B
-                    self._emit("LHLD", base_asm_name)
-                    self._emit("MOV", "A,B")  # Restore value
-                    self._emit("MOV", "M,A")  # Store via HL
+                        self._emit("ld", "a,l")  # Get byte value into A
+                    self._emit("ld", "b,a")  # Save value in B
+                    self._emit("ld", f"hl,({base_asm_name})")
+                    self._emit("ld", "a,b")  # Restore value
+                    self._emit("ld", "(hl),a")  # Store via HL
                 else:
                     # Save value in HL
-                    self._emit("PUSH", "H")
-                    self._emit("LHLD", base_asm_name)
-                    self._emit("XCHG")  # DE = address
-                    self._emit("POP", "H")  # HL = value
-                    self._emit("XCHG")  # HL = address, DE = value
-                    self._emit("MOV", "M,E")
-                    self._emit("INX", "H")
-                    self._emit("MOV", "M,D")
+                    self._emit("push", "hl")
+                    self._emit("ld", f"hl,({base_asm_name})")
+                    self._emit("ex", "de,hl")  # DE = address
+                    self._emit("pop", "hl")  # HL = value
+                    self._emit("ex", "de,hl")  # HL = address, DE = value
+                    self._emit("ld", "(hl),e")
+                    self._emit("inc", "hl")
+                    self._emit("ld", "(hl),d")
                 return
 
             # Check for stack-based variable (reentrant procedure local)
@@ -3598,30 +3595,30 @@ class CodeGenerator:
                 if sym.data_type == DataType.BYTE:
                     # Value may be in A (if val_type==BYTE) or L (if val_type==ADDRESS)
                     if val_type != DataType.BYTE:
-                        self._emit("MOV", "A,L")
-                    self._emit("LD", f"(IX+{offset}),A")
+                        self._emit("ld", "a,l")
+                    self._emit("ld", f"(ix+{offset}),a")
                 else:
                     # Target is ADDRESS
                     if val_type == DataType.BYTE:
                         # Value is in A, need to zero-extend to HL
-                        self._emit("MOV", "L,A")
-                        self._emit("MVI", "H,0")
-                    self._emit("LD", f"(IX+{offset}),L")
-                    self._emit("LD", f"(IX+{offset + 1}),H")
+                        self._emit("ld", "l,a")
+                        self._emit("ld", "h,0")
+                    self._emit("ld", f"(ix+{offset}),l")
+                    self._emit("ld", f"(ix+{offset + 1}),h")
                 return
 
             if sym and sym.data_type == DataType.BYTE:
                 # Value may be in A (if val_type==BYTE) or L (if val_type==ADDRESS)
                 if val_type != DataType.BYTE:
-                    self._emit("MOV", "A,L")
-                self._emit("STA", asm_name)
+                    self._emit("ld", "a,l")
+                self._emit("ld", f"({asm_name}),a")
             else:
                 # Target is ADDRESS
                 if val_type == DataType.BYTE:
                     # Value is in A, need to zero-extend to HL
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
-                self._emit("SHLD", asm_name)
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("ld", f"({asm_name}),hl")
 
         elif isinstance(expr, SubscriptExpr):
             # Check for MEMORY(addr) = value special case
@@ -3629,19 +3626,19 @@ class CodeGenerator:
                 # MEMORY(addr) = value - store byte to __END__ + addr
                 # MEMORY is the predeclared byte array starting at end of program
                 self.needs_end_symbol = True
-                self._emit("PUSH", "H")  # Save value
+                self._emit("push", "hl")  # Save value
                 if isinstance(expr.index, NumberLiteral) and expr.index.value == 0:
                     # MEMORY(0) - just use __END__ directly
-                    self._emit("LXI", "H,__END__")
+                    self._emit("ld", "hl,__END__")
                 else:
                     # MEMORY(n) - compute __END__ + n
                     self._gen_expr(expr.index)  # HL = offset
-                    self._emit("LXI", "D,__END__")
-                    self._emit("DAD", "D")  # HL = __END__ + offset
-                self._emit("XCHG")  # DE = address
-                self._emit("POP", "H")  # HL = value
-                self._emit("MOV", "A,L")
-                self._emit("STAX", "D")
+                    self._emit("ld", "de,__END__")
+                    self._emit("add", "hl,de")  # HL = __END__ + offset
+                self._emit("ex", "de,hl")  # DE = address
+                self._emit("pop", "hl")  # HL = value
+                self._emit("ld", "a,l")
+                self._emit("ld", "(de),a")
                 return
 
             # Check for OUTPUT(port) = value special case
@@ -3662,17 +3659,17 @@ class CodeGenerator:
 
                 if port_num is not None:
                     # Constant port - use OUT instruction directly
-                    self._emit("MOV", "A,L")  # Value in A
-                    self._emit("OUT", self._format_number(port_num))
+                    self._emit("ld", "a,l")  # Value in A
+                    self._emit("out", f"({self._format_number(port_num)}),a")
                 else:
                     # Variable port - need runtime support
-                    self._emit("PUSH", "H")  # Save value
+                    self._emit("push", "hl")  # Save value
                     self._gen_expr(port_arg)  # Evaluate port number
-                    self._emit("MOV", "C,L")  # Port in C
-                    self._emit("POP", "H")  # Restore value
-                    self._emit("MOV", "A,L")  # Value in A
-                    self._emit("CALL", "??OUTP")
-                    self.needs_runtime.add("??OUTP")
+                    self._emit("ld", "c,l")  # Port in C
+                    self._emit("pop", "hl")  # Restore value
+                    self._emit("ld", "a,l")  # Value in A
+                    self._emit("call", "??outp")
+                    self.needs_runtime.add("outp")
                 return
 
             # Array element store
@@ -3683,39 +3680,39 @@ class CodeGenerator:
                 if sym and sym.data_type == DataType.ADDRESS:
                     elem_type = DataType.ADDRESS
 
-            self._emit("PUSH", "H")  # Save value
+            self._emit("push", "hl")  # Save value
             self._gen_subscript_addr(expr)  # HL = address
-            self._emit("XCHG")  # DE = address
-            self._emit("POP", "H")  # HL = value
+            self._emit("ex", "de,hl")  # DE = address
+            self._emit("pop", "hl")  # HL = value
 
             if elem_type == DataType.ADDRESS:
                 # Store 16-bit value
-                self._emit("XCHG")  # HL = address, DE = value
-                self._emit("MOV", "M,E")
-                self._emit("INX", "H")
-                self._emit("MOV", "M,D")
+                self._emit("ex", "de,hl")  # HL = address, DE = value
+                self._emit("ld", "(hl),e")
+                self._emit("inc", "hl")
+                self._emit("ld", "(hl),d")
             else:
                 # Store BYTE value
-                self._emit("MOV", "A,L")
-                self._emit("STAX", "D")
+                self._emit("ld", "a,l")
+                self._emit("ld", "(de),a")
 
         elif isinstance(expr, MemberExpr):
             # Structure member store
             _, member_type = self._get_member_info(expr)
-            self._emit("PUSH", "H")
+            self._emit("push", "hl")
             self._gen_member_addr(expr)
-            self._emit("XCHG")  # DE = member address
-            self._emit("POP", "H")  # HL = value
+            self._emit("ex", "de,hl")  # DE = member address
+            self._emit("pop", "hl")  # HL = value
             if member_type == DataType.ADDRESS:
                 # Store 16-bit value
-                self._emit("XCHG")  # HL = address, DE = value
-                self._emit("MOV", "M,E")
-                self._emit("INX", "H")
-                self._emit("MOV", "M,D")
+                self._emit("ex", "de,hl")  # HL = address, DE = value
+                self._emit("ld", "(hl),e")
+                self._emit("inc", "hl")
+                self._emit("ld", "(hl),d")
             else:
                 # Store 8-bit value
-                self._emit("MOV", "A,L")
-                self._emit("STAX", "D")
+                self._emit("ld", "a,l")
+                self._emit("ld", "(de),a")
 
         elif isinstance(expr, CallExpr):
             # Special built-in assignment targets: OUTPUT(port) = value
@@ -3736,17 +3733,17 @@ class CodeGenerator:
 
                 if port_num is not None:
                     # Constant port - use OUT instruction directly
-                    self._emit("MOV", "A,L")  # Value in A
-                    self._emit("OUT", self._format_number(port_num))
+                    self._emit("ld", "a,l")  # Value in A
+                    self._emit("out", f"({self._format_number(port_num)}),a")
                 else:
                     # Variable port - need runtime support
-                    self._emit("PUSH", "H")  # Save value
+                    self._emit("push", "hl")  # Save value
                     self._gen_expr(port_arg)  # Evaluate port number
-                    self._emit("MOV", "C,L")  # Port in C
-                    self._emit("POP", "H")  # Restore value
-                    self._emit("MOV", "A,L")  # Value in A
-                    self._emit("CALL", "??OUTP")
-                    self.needs_runtime.add("??OUTP")
+                    self._emit("ld", "c,l")  # Port in C
+                    self._emit("pop", "hl")  # Restore value
+                    self._emit("ld", "a,l")  # Value in A
+                    self._emit("call", "??outp")
+                    self.needs_runtime.add("outp")
                 return
 
             # Check for MEMORY(addr) = value special case (built-in byte array at __END__)
@@ -3765,30 +3762,30 @@ class CodeGenerator:
                         pass
 
                 if addr_val is not None:
-                    # Constant offset - use STA to __END__+offset
+                    # Constant offset - use LD (__END__+offset),A
                     if val_type != DataType.BYTE:
-                        self._emit("MOV", "A,L")
+                        self._emit("ld", "a,l")
                     if addr_val == 0:
-                        self._emit("STA", "__END__")
+                        self._emit("ld", "(__END__),a")
                     else:
-                        self._emit("STA", f"__END__+{self._format_number(addr_val)}")
+                        self._emit("ld", f"(__END__+{self._format_number(addr_val)}),a")
                 else:
                     # Variable offset - compute __END__ + offset, then store
                     if val_type == DataType.BYTE:
-                        self._emit("MOV", "B,A")  # Save value in B
+                        self._emit("ld", "b,a")  # Save value in B
                         self._gen_expr(addr_arg)  # HL = offset
-                        self._emit("LXI", "D,__END__")
-                        self._emit("DAD", "D")  # HL = __END__ + offset
-                        self._emit("MOV", "M,B")  # Store value at (HL)
+                        self._emit("ld", "de,__END__")
+                        self._emit("add", "hl,de")  # HL = __END__ + offset
+                        self._emit("ld", "(hl),b")  # Store value at (HL)
                     else:
-                        self._emit("PUSH", "H")  # Save value
+                        self._emit("push", "hl")  # Save value
                         self._gen_expr(addr_arg)  # HL = offset
-                        self._emit("LXI", "D,__END__")
-                        self._emit("DAD", "D")  # HL = __END__ + offset
-                        self._emit("XCHG")  # DE = address
-                        self._emit("POP", "H")  # HL = value
-                        self._emit("MOV", "A,L")
-                        self._emit("STAX", "D")
+                        self._emit("ld", "de,__END__")
+                        self._emit("add", "hl,de")  # HL = __END__ + offset
+                        self._emit("ex", "de,hl")  # DE = address
+                        self._emit("pop", "hl")  # HL = value
+                        self._emit("ld", "a,l")
+                        self._emit("ld", "(de),a")
                 return
 
             # Check if this is actually an array subscript (parser creates CallExpr for arr(idx))
@@ -3810,25 +3807,25 @@ class CodeGenerator:
                             # Store 16-bit value (value in HL)
                             if val_type == DataType.BYTE:
                                 # Expand BYTE to ADDRESS
-                                self._emit("MOV", "L,A")
-                                self._emit("MVI", "H,0")
+                                self._emit("ld", "l,a")
+                                self._emit("ld", "h,0")
                             if offset == 0:
-                                self._emit("SHLD", asm_name)
+                                self._emit("ld", f"({asm_name}),hl")
                             else:
-                                # Need to store at offset - use LXI D, addr; then store via D
-                                self._emit("LXI", f"D,{asm_name}+{offset}")
-                                self._emit("XCHG")  # HL = address, DE = value
-                                self._emit("MOV", "M,E")
-                                self._emit("INX", "H")
-                                self._emit("MOV", "M,D")
+                                # Need to store at offset - use ld de,addr; then store via DE
+                                self._emit("ld", f"de,{asm_name}+{offset}")
+                                self._emit("ex", "de,hl")  # HL = address, DE = value
+                                self._emit("ld", "(hl),e")
+                                self._emit("inc", "hl")
+                                self._emit("ld", "(hl),d")
                         else:
                             # Store BYTE value (value in A)
                             if val_type != DataType.BYTE:
-                                self._emit("MOV", "A,L")  # Get low byte
+                                self._emit("ld", "a,l")  # Get low byte
                             if offset == 0:
-                                self._emit("STA", asm_name)
+                                self._emit("ld", f"({asm_name}),a")
                             else:
-                                self._emit("STA", f"{asm_name}+{offset}")
+                                self._emit("ld", f"({asm_name}+{offset}),a")
                     else:
                         # Variable index - need to compute address
                         elem_type = sym.data_type if sym else DataType.BYTE
@@ -3836,55 +3833,55 @@ class CodeGenerator:
                             # ADDRESS array - need to store 16-bit value
                             if val_type == DataType.BYTE:
                                 # Expand BYTE (in A) to ADDRESS (in HL)
-                                self._emit("MOV", "L,A")
-                                self._emit("MVI", "H,0")
+                                self._emit("ld", "l,a")
+                                self._emit("ld", "h,0")
                             # Value in HL - save it, compute address, store
-                            self._emit("PUSH", "H")  # Save value
+                            self._emit("push", "hl")  # Save value
                             self._gen_subscript_addr(subscript)  # HL = address
-                            self._emit("POP", "D")  # DE = value
-                            self._emit("MOV", "M,E")  # Store low byte at (HL)
-                            self._emit("INX", "H")
-                            self._emit("MOV", "M,D")  # Store high byte at (HL+1)
+                            self._emit("pop", "de")  # DE = value
+                            self._emit("ld", "(hl),e")  # Store low byte at (HL)
+                            self._emit("inc", "hl")
+                            self._emit("ld", "(hl),d")  # Store high byte at (HL+1)
                         else:
                             # BYTE array - store single byte
                             if val_type != DataType.BYTE:
-                                self._emit("MOV", "A,L")  # Get low byte from ADDRESS
+                                self._emit("ld", "a,l")  # Get low byte from ADDRESS
                             # Value in A - save it, compute address, store
-                            self._emit("MOV", "B,A")  # Save value in B
+                            self._emit("ld", "b,a")  # Save value in B
                             self._gen_subscript_addr(subscript)  # HL = address
-                            self._emit("MOV", "M,B")  # Store value
+                            self._emit("ld", "(hl),b")  # Store value
                     return
 
             # Unknown call target - fall through to complex store
-            self._emit("PUSH", "H")
+            self._emit("push", "hl")
             self._gen_location(LocationExpr(operand=expr))
-            self._emit("XCHG")
-            self._emit("POP", "H")
+            self._emit("ex", "de,hl")
+            self._emit("pop", "hl")
             if val_type == DataType.BYTE:
-                self._emit("MOV", "A,L")
-                self._emit("STAX", "D")
+                self._emit("ld", "a,l")
+                self._emit("ld", "(de),a")
             else:
-                self._emit("XCHG")
-                self._emit("MOV", "M,E")
-                self._emit("INX", "H")
-                self._emit("MOV", "M,D")
+                self._emit("ex", "de,hl")
+                self._emit("ld", "(hl),e")
+                self._emit("inc", "hl")
+                self._emit("ld", "(hl),d")
             return
 
         else:
             # Complex store
-            self._emit("PUSH", "H")  # Save value
+            self._emit("push", "hl")  # Save value
             self._gen_location(LocationExpr(operand=expr))  # HL = address
-            self._emit("XCHG")  # DE = address
-            self._emit("POP", "H")  # HL = value
+            self._emit("ex", "de,hl")  # DE = address
+            self._emit("pop", "hl")  # HL = value
             # Store based on type
             if val_type == DataType.BYTE:
-                self._emit("MOV", "A,L")
-                self._emit("STAX", "D")
+                self._emit("ld", "a,l")
+                self._emit("ld", "(de),a")
             else:
-                self._emit("XCHG")  # HL = address, DE = value
-                self._emit("MOV", "M,E")
-                self._emit("INX", "H")
-                self._emit("MOV", "M,D")
+                self._emit("ex", "de,hl")  # HL = address, DE = value
+                self._emit("ld", "(hl),e")
+                self._emit("inc", "hl")
+                self._emit("ld", "(hl),d")
 
     def _match_shl_double_8(self, expr: Expr) -> Expr | None:
         """
@@ -3948,9 +3945,9 @@ class CodeGenerator:
                 if lo_type == DataType.BYTE:
                     # Generate optimized: hi -> H, lo -> L
                     self._gen_expr(hi_expr)  # Result in A
-                    self._emit("MOV", "H,A")  # H = high byte
+                    self._emit("ld", "h,a")  # H = high byte
                     self._gen_expr(expr.right)  # Result in A
-                    self._emit("MOV", "L,A")  # L = low byte
+                    self._emit("ld", "l,a")  # L = low byte
                     # HL now contains combined address
                     return DataType.ADDRESS
 
@@ -3964,7 +3961,7 @@ class CodeGenerator:
             if isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
                 return self._gen_addr_zero_comparison(expr.left, op)
 
-        # Special case: byte comparison with constant - use CPI
+        # Special case: byte comparison with constant - use cp n
         if op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,
                   BinaryOp.LE, BinaryOp.GE):
             if both_bytes:
@@ -3987,40 +3984,40 @@ class CodeGenerator:
         # Optimize BYTE PLUS/MINUS 0: just ADC A,0 or SBC A,0 (preserves carry chain)
         if op == BinaryOp.PLUS and left_type == DataType.BYTE and isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
             self._gen_expr(expr.left)  # Result in A
-            self._emit("ACI", "0")  # ADC A,0 - add carry
+            self._emit("adc", "a,0")  # add carry
             return DataType.BYTE
 
         if op == BinaryOp.MINUS and left_type == DataType.BYTE and isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
             self._gen_expr(expr.left)  # Result in A
-            self._emit("SBI", "0")  # SBC A,0 - subtract carry
+            self._emit("sbc", "a,0")  # subtract carry
             return DataType.BYTE
 
-        # Optimize ADDRESS +/- constant: use INX/DCX for small, LXI D + DAD for larger
+        # Optimize ADDRESS +/- constant: use inc hl/dec hl for small, LD DE + add hl,DE for larger
         # Only apply if left operand actually ends up in HL (ADDRESS type)
         if op == BinaryOp.ADD and isinstance(expr.right, NumberLiteral) and left_type == DataType.ADDRESS:
             const_val = expr.right.value
-            if 1 <= const_val <= 4:  # Small constants: use repeated INX
+            if 1 <= const_val <= 4:  # Small constants: use repeated inc hl
                 self._gen_expr(expr.left)
                 for _ in range(const_val):
-                    self._emit("INX", "H")
+                    self._emit("inc", "hl")
                 return DataType.ADDRESS
             else:
-                # Larger constants: use LXI D,const; DAD D (no PUSH/POP needed)
+                # Larger constants: use ld de,const; add hl,DE (no PUSH/POP needed)
                 self._gen_expr(expr.left)  # HL = left
-                self._emit("LXI", f"D,{self._format_number(const_val)}")
-                self._emit("DAD", "D")  # HL = HL + DE
+                self._emit("ld", f"de,{self._format_number(const_val)}")
+                self._emit("add", "hl,de")  # HL = HL + DE
                 return DataType.ADDRESS
         elif op == BinaryOp.SUB and isinstance(expr.right, NumberLiteral) and left_type == DataType.ADDRESS:
             const_val = expr.right.value
-            if 1 <= const_val <= 4:  # Small constants: use repeated DCX
+            if 1 <= const_val <= 4:  # Small constants: use repeated dec hl
                 self._gen_expr(expr.left)
                 for _ in range(const_val):
-                    self._emit("DCX", "H")
+                    self._emit("dec", "hl")
                 return DataType.ADDRESS
             else:
                 # Larger constants: use subtraction without PUSH/POP
                 self._gen_expr(expr.left)  # HL = left
-                self._emit("LXI", f"D,{self._format_number(const_val)}")
+                self._emit("ld", f"de,{self._format_number(const_val)}")
                 # HL = HL - DE
                 self._emit_sub16()
                 return DataType.ADDRESS
@@ -4032,15 +4029,15 @@ class CodeGenerator:
             # Evaluate right first
             right_result = self._gen_expr(expr.right)
             if right_result == DataType.BYTE:
-                self._emit("MOV", "E,A")
-                self._emit("MVI", "D,0")
+                self._emit("ld", "e,a")
+                self._emit("ld", "d,0")
             else:
-                self._emit("XCHG")  # DE = right
+                self._emit("ex", "de,hl")  # DE = right
             # Now evaluate left - DE is preserved
             left_result = self._gen_expr(expr.left)
             if left_result == DataType.BYTE:
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
             # Now: HL = left, DE = right (no PUSH/POP needed!)
         elif self._is_simple_address_expr(expr.left) and op == BinaryOp.ADD:
             # LEFT is simple (constant/identifier that can be loaded into DE)
@@ -4048,76 +4045,76 @@ class CodeGenerator:
             # This avoids PUSH/POP for patterns like: DBUFF + (NDEST + offset)
             right_result = self._gen_expr(expr.right)
             if right_result == DataType.BYTE:
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
             # Load simple left expression into DE
             self._gen_simple_to_de(expr.left)
             # Now: HL = right, DE = left - swap for correct ADD order
-            self._emit("XCHG")  # HL = left, DE = right
+            self._emit("ex", "de,hl")  # HL = left, DE = right
         else:
             # Left is complex - use traditional PUSH/POP approach
             # Evaluate left operand
             left_result = self._gen_expr(expr.left)
             if left_result == DataType.BYTE:
                 # Extend A to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")  # Save left on stack
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")  # Save left on stack
 
             # Evaluate right operand
             right_result = self._gen_expr(expr.right)
             if right_result == DataType.BYTE:
                 # Extend A to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
 
             # Pop left into DE
-            self._emit("XCHG")  # DE = right
-            self._emit("POP", "H")  # HL = left
+            self._emit("ex", "de,hl")  # DE = right
+            self._emit("pop", "hl")  # HL = left
             # Now: HL = left, DE = right
 
         if op == BinaryOp.ADD:
-            self._emit("DAD", "D")  # HL = HL + DE
+            self._emit("add", "hl,de")  # HL = HL + DE
 
         elif op == BinaryOp.SUB:
             # HL = HL - DE
             self._emit_sub16()
 
         elif op == BinaryOp.MUL:
-            self.needs_runtime.add("MUL16")
-            self._emit("CALL", "??MUL16")
+            self.needs_runtime.add("mul16")
+            self._emit("call", "??mul16")
 
         elif op == BinaryOp.DIV:
-            self.needs_runtime.add("DIV16")
-            self._emit("CALL", "??DIV16")
+            self.needs_runtime.add("div16")
+            self._emit("call", "??div16")
 
         elif op == BinaryOp.MOD:
-            self.needs_runtime.add("MOD16")
-            self._emit("CALL", "??MOD16")
+            self.needs_runtime.add("mod16")
+            self._emit("call", "??mod16")
 
         elif op == BinaryOp.AND:
-            self._emit("MOV", "A,L")
-            self._emit("ANA", "E")
-            self._emit("MOV", "L,A")
-            self._emit("MOV", "A,H")
-            self._emit("ANA", "D")
-            self._emit("MOV", "H,A")
+            self._emit("ld", "a,l")
+            self._emit("and", "e")
+            self._emit("ld", "l,a")
+            self._emit("ld", "a,h")
+            self._emit("and", "d")
+            self._emit("ld", "h,a")
 
         elif op == BinaryOp.OR:
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "E")
-            self._emit("MOV", "L,A")
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "D")
-            self._emit("MOV", "H,A")
+            self._emit("ld", "a,l")
+            self._emit("or", "e")
+            self._emit("ld", "l,a")
+            self._emit("ld", "a,h")
+            self._emit("or", "d")
+            self._emit("ld", "h,a")
 
         elif op == BinaryOp.XOR:
-            self._emit("MOV", "A,L")
-            self._emit("XRA", "E")
-            self._emit("MOV", "L,A")
-            self._emit("MOV", "A,H")
-            self._emit("XRA", "D")
-            self._emit("MOV", "H,A")
+            self._emit("ld", "a,l")
+            self._emit("xor", "e")
+            self._emit("ld", "l,a")
+            self._emit("ld", "a,h")
+            self._emit("xor", "d")
+            self._emit("ld", "h,a")
 
         elif op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,
                    BinaryOp.LE, BinaryOp.GE):
@@ -4126,21 +4123,21 @@ class CodeGenerator:
 
         elif op == BinaryOp.PLUS:
             # PLUS: add with carry from previous operation
-            self._emit("MOV", "A,L")
-            self._emit("ADC", "E")
-            self._emit("MOV", "L,A")
-            self._emit("MOV", "A,H")
-            self._emit("ADC", "D")
-            self._emit("MOV", "H,A")
+            self._emit("ld", "a,l")
+            self._emit("adc", "a,e")
+            self._emit("ld", "l,a")
+            self._emit("ld", "a,h")
+            self._emit("adc", "a,d")
+            self._emit("ld", "h,a")
 
         elif op == BinaryOp.MINUS:
             # MINUS: subtract with borrow from previous operation
-            self._emit("MOV", "A,L")
-            self._emit("SBB", "E")
-            self._emit("MOV", "L,A")
-            self._emit("MOV", "A,H")
-            self._emit("SBB", "D")
-            self._emit("MOV", "H,A")
+            self._emit("ld", "a,l")
+            self._emit("sbc", "a,e")
+            self._emit("ld", "l,a")
+            self._emit("ld", "a,h")
+            self._emit("sbc", "a,d")
+            self._emit("ld", "h,a")
 
         return DataType.ADDRESS
 
@@ -4155,117 +4152,117 @@ class CodeGenerator:
         # Now: HL = left - right, flags set from SBB D (carry = borrow)
 
         if op == BinaryOp.EQ:
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")  # OR high and low
-            self._emit("JZ", true_label)
+            self._emit("ld", "a,l")
+            self._emit("or", "h")  # or high and low
+            self._emit("jp", f"z,{true_label}")
         elif op == BinaryOp.NE:
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JNZ", true_label)
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"nz,{true_label}")
         elif op == BinaryOp.LT:
             # left < right if borrow occurred
-            self._emit("JC", true_label)
+            self._emit("jp", f"c,{true_label}")
         elif op == BinaryOp.GE:
-            self._emit("JNC", true_label)
+            self._emit("jp", f"nc,{true_label}")
         elif op == BinaryOp.GT:
             # left > right: no borrow AND not equal
-            self._emit("JC", false_label)  # If left < right, false
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JNZ", true_label)  # If not equal, left > right
+            self._emit("jp", f"c,{false_label}")  # If left < right, false
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"nz,{true_label}")  # If not equal, left > right
         elif op == BinaryOp.LE:
-            self._emit("JC", true_label)  # left < right
-            self._emit("MOV", "A,L")
-            self._emit("ORA", "H")
-            self._emit("JZ", true_label)  # left == right
+            self._emit("jp", f"c,{true_label}")  # left < right
+            self._emit("ld", "a,l")
+            self._emit("or", "h")
+            self._emit("jp", f"z,{true_label}")  # left == right
 
         # False case - return 0 in A
         self._emit_label(false_label)
-        self._emit("XRA", "A")
-        self._emit("JMP", end_label)
+        self._emit("xor", "a")
+        self._emit("jp", end_label)
 
         # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,0FFH")
+        self._emit("ld", "a,0ffh")
 
         self._emit_label(end_label)
         return DataType.BYTE
 
     def _gen_addr_zero_comparison(self, left: Expr, op: BinaryOp) -> DataType:
-        """Generate optimized ADDRESS comparison with 0 using ORA.
+        """Generate optimized ADDRESS comparison with 0 using OR.
 
         For N = 0 or N <> 0 where N is ADDRESS, use:
-            LD A,L
-            OR H
-            JZ/JNZ label
+            ld a,L
+            or h
+            jp z/jp nz label
         instead of full 16-bit subtraction.
         """
         # Load left operand into HL
         self._gen_expr(left)
 
         # Test if HL is zero: A = L | H
-        self._emit("MOV", "A,L")
-        self._emit("ORA", "H")
+        self._emit("ld", "a,l")
+        self._emit("or", "h")
 
         # Generate result based on comparison type
         true_label = self._new_label("TRUE")
         end_label = self._new_label("CMP")
 
         if op == BinaryOp.EQ:
-            self._emit("JZ", true_label)  # If zero, equal
+            self._emit("jp", f"z,{true_label}")  # If zero, equal
         elif op == BinaryOp.NE:
-            self._emit("JNZ", true_label)  # If not zero, not equal
+            self._emit("jp", f"nz,{true_label}")  # If not zero, not equal
 
         # False case - return 0 in A
-        self._emit("XRA", "A")
-        self._emit("JMP", end_label)
+        self._emit("xor", "a")
+        self._emit("jp", end_label)
 
         # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,0FFH")
+        self._emit("ld", "a,0ffh")
 
         self._emit_label(end_label)
         return DataType.BYTE
 
     def _gen_byte_comparison_const(self, left: Expr, op: BinaryOp, const_val: int) -> DataType:
-        """Generate optimized byte comparison with constant using CPI."""
+        """Generate optimized byte comparison with constant using cp n."""
         # Load left operand into A
         left_type = self._gen_expr(left)
         if left_type != DataType.BYTE:
             # If not already a byte, take low byte
-            self._emit("MOV", "A,L")
+            self._emit("ld", "a,l")
 
         # Compare with constant
-        self._emit("CPI", self._format_number(const_val))
+        self._emit("cp", self._format_number(const_val))
 
         # Generate result based on comparison type
         true_label = self._new_label("TRUE")
         end_label = self._new_label("CMP")
 
         if op == BinaryOp.EQ:
-            self._emit("JZ", true_label)
+            self._emit("jp", f"z,{true_label}")
         elif op == BinaryOp.NE:
-            self._emit("JNZ", true_label)
+            self._emit("jp", f"nz,{true_label}")
         elif op == BinaryOp.LT:
-            self._emit("JC", true_label)
+            self._emit("jp", f"c,{true_label}")
         elif op == BinaryOp.GE:
-            self._emit("JNC", true_label)
+            self._emit("jp", f"nc,{true_label}")
         elif op == BinaryOp.GT:
-            # A > const: not equal AND not less (JNC and JNZ)
-            self._emit("JC", end_label)  # If less, false
-            self._emit("JZ", end_label)  # If equal, false
-            self._emit("JMP", true_label)  # Otherwise true
+            # A > const: not equal AND not less (jp nc and jp nz)
+            self._emit("jp", f"c,{end_label}")  # If less, false
+            self._emit("jp", f"z,{end_label}")  # If equal, false
+            self._emit("jp", true_label)  # Otherwise true
         elif op == BinaryOp.LE:
-            self._emit("JC", true_label)  # Less than -> true
-            self._emit("JZ", true_label)  # Equal -> true
+            self._emit("jp", f"c,{true_label}")  # Less than -> true
+            self._emit("jp", f"z,{true_label}")  # Equal -> true
 
         # False case - return 0 in A
-        self._emit("XRA", "A")
-        self._emit("JMP", end_label)
+        self._emit("xor", "a")
+        self._emit("jp", end_label)
 
         # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,0FFH")
+        self._emit("ld", "a,0ffh")
 
         self._emit_label(end_label)
         return DataType.BYTE  # Comparisons return BYTE (0 or 0FFH)
@@ -4274,38 +4271,38 @@ class CodeGenerator:
         """Generate optimized byte comparison between two byte values."""
         # Load right first, then left, so we can SUB B directly
         self._gen_expr(right)  # Result in A
-        self._emit("MOV", "B,A")  # Save right in B
+        self._emit("ld", "b,a")  # Save right in B
 
         self._gen_expr(left)  # Result in A (left)
-        self._emit("SUB", "B")    # A = left - right, flags set
+        self._emit("sub", "b")    # A = left - right, flags set
 
         # Generate result
         true_label = self._new_label("TRUE")
         end_label = self._new_label("CMP")
 
         if op == BinaryOp.EQ:
-            self._emit("JZ", true_label)
+            self._emit("jp", f"z,{true_label}")
         elif op == BinaryOp.NE:
-            self._emit("JNZ", true_label)
+            self._emit("jp", f"nz,{true_label}")
         elif op == BinaryOp.LT:
-            self._emit("JC", true_label)
+            self._emit("jp", f"c,{true_label}")
         elif op == BinaryOp.GE:
-            self._emit("JNC", true_label)
+            self._emit("jp", f"nc,{true_label}")
         elif op == BinaryOp.GT:
-            self._emit("JC", end_label)
-            self._emit("JZ", end_label)
-            self._emit("JMP", true_label)
+            self._emit("jp", f"c,{end_label}")
+            self._emit("jp", f"z,{end_label}")
+            self._emit("jp", true_label)
         elif op == BinaryOp.LE:
-            self._emit("JC", true_label)
-            self._emit("JZ", true_label)
+            self._emit("jp", f"c,{true_label}")
+            self._emit("jp", f"z,{true_label}")
 
         # False case - return 0 in A
-        self._emit("XRA", "A")
-        self._emit("JMP", end_label)
+        self._emit("xor", "a")
+        self._emit("jp", end_label)
 
         # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,0FFH")
+        self._emit("ld", "a,0ffh")
 
         self._emit_label(end_label)
         return DataType.BYTE  # Comparisons return BYTE (0 or 0FFH)
@@ -4317,15 +4314,15 @@ class CodeGenerator:
             self._gen_expr_to_a(left)  # Load left into A
             const = self._format_number(right.value)
             if op == BinaryOp.ADD:
-                self._emit("ADI", const)  # A = A + const
+                self._emit("add", f"a,{const}")  # A = A + const
             elif op == BinaryOp.SUB:
-                self._emit("SUI", const)  # A = A - const
+                self._emit("sub", const)  # A = A - const
             elif op == BinaryOp.AND:
-                self._emit("ANI", const)  # A = A AND const
+                self._emit("and", const)  # A = A AND const
             elif op == BinaryOp.OR:
-                self._emit("ORI", const)  # A = A OR const
+                self._emit("or", const)  # A = A OR const
             elif op == BinaryOp.XOR:
-                self._emit("XRI", const)  # A = A XOR const
+                self._emit("xor", const)  # A = A XOR const
             return DataType.BYTE
 
         # Special case: const - var (left is constant, subtraction)
@@ -4333,29 +4330,29 @@ class CodeGenerator:
             if left.value == 1:
                 # 1 - x is a boolean toggle: use XOR 1
                 self._gen_expr_to_a(right)
-                self._emit("XRI", "1")
+                self._emit("xor", "1")
             else:
                 # const - x: negate x then add const
                 # -x = NOT(x) + 1, so const - x = NOT(x) + 1 + const = NOT(x) + (const+1)
-                # But we need to handle overflow: use CMA; ADI const; INR A for (const-x)
-                # Actually: A = right; CMA; INR A gives -right; then ADI const
+                # But we need to handle overflow: use CPL; ADD A,const; INC A for (const-x)
+                # Actually: A = right; CPL; INC A gives -right; then ADD A,const
                 self._gen_expr_to_a(right)
-                self._emit("CMA")  # A = NOT(right)
-                self._emit("INR", "A")  # A = -right (two's complement)
-                self._emit("ADI", self._format_number(left.value))  # A = const - right
+                self._emit("cpl")  # A = NOT(right)
+                self._emit("inc", "a")  # A = -right (two's complement)
+                self._emit("add", f"a,{self._format_number(left.value)}")  # A = const - right
             return DataType.BYTE
 
         # For subtraction, load right first so we can do SUB B directly
         if op == BinaryOp.SUB:
             self._gen_expr_to_a(right)
-            self._emit("MOV", "B,A")  # Save right in B
+            self._emit("ld", "b,a")  # Save right in B
             self._gen_expr_to_a(left)
-            self._emit("SUB", "B")    # A = left - right
+            self._emit("sub", "b")    # A = left - right
             return DataType.BYTE
 
         # General case: load left into A, save to B
         self._gen_expr_to_a(left)
-        self._emit("MOV", "B,A")  # Save left in B
+        self._emit("ld", "b,a")  # Save left in B
 
         # Load right into A
         self._gen_expr_to_a(right)
@@ -4363,13 +4360,13 @@ class CodeGenerator:
 
         # Perform operation: result = left op right
         if op == BinaryOp.ADD:
-            self._emit("ADD", "B")  # A = A + B = right + left
+            self._emit("add", "a,b")  # A = A + B = right + left
         elif op == BinaryOp.AND:
-            self._emit("ANA", "B")  # A = A AND B
+            self._emit("and", "b")  # A = A AND B
         elif op == BinaryOp.OR:
-            self._emit("ORA", "B")  # A = A OR B
+            self._emit("or", "b")  # A = A OR B
         elif op == BinaryOp.XOR:
-            self._emit("XRA", "B")  # A = A XOR B
+            self._emit("xor", "b")  # A = A XOR B
 
         # Result is in A, return BYTE
         return DataType.BYTE
@@ -4378,15 +4375,15 @@ class CodeGenerator:
         """Generate code to load an expression into A (for byte operations)."""
         if isinstance(expr, NumberLiteral):
             if expr.value <= 255:
-                self._emit("MVI", f"A,{self._format_number(expr.value)}")
+                self._emit("ld", f"a,{self._format_number(expr.value)}")
             else:
                 # Large constant - load low byte
-                self._emit("MVI", f"A,{self._format_number(expr.value & 0xFF)}")
+                self._emit("ld", f"a,{self._format_number(expr.value & 0xFF)}")
         else:
             result_type = self._gen_expr(expr)
             if result_type == DataType.ADDRESS:
                 # Value is in HL, get low byte into A
-                self._emit("MOV", "A,L")
+                self._emit("ld", "a,l")
 
     def _gen_unary(self, expr: UnaryExpr) -> DataType:
         """Generate code for unary expression."""
@@ -4395,49 +4392,49 @@ class CodeGenerator:
         if expr.op == UnaryOp.NEG:
             if operand_type == DataType.BYTE:
                 # Negate A: A = 0 - A
-                self._emit("CPL")
-                self._emit("INR", "A")
+                self._emit("cpl")
+                self._emit("inc", "a")
                 return DataType.BYTE
             else:
                 # Negate HL: HL = 0 - HL
-                self._emit("MOV", "A,L")
-                self._emit("CMA")
-                self._emit("MOV", "L,A")
-                self._emit("MOV", "A,H")
-                self._emit("CMA")
-                self._emit("MOV", "H,A")
-                self._emit("INX", "H")
+                self._emit("ld", "a,l")
+                self._emit("cpl")
+                self._emit("ld", "l,a")
+                self._emit("ld", "a,h")
+                self._emit("cpl")
+                self._emit("ld", "h,a")
+                self._emit("inc", "hl")
                 return DataType.ADDRESS
 
         elif expr.op == UnaryOp.NOT:
             if operand_type == DataType.BYTE:
                 # Bitwise NOT: complement all bits
                 # A contains the byte value
-                self._emit("CMA")  # A = ~A (bitwise complement)
+                self._emit("cpl")  # A = ~A (bitwise complement)
                 return DataType.BYTE
             else:
                 # Bitwise NOT for ADDRESS: complement both bytes
-                self._emit("MOV", "A,L")
-                self._emit("CMA")
-                self._emit("MOV", "L,A")
-                self._emit("MOV", "A,H")
-                self._emit("CMA")
-                self._emit("MOV", "H,A")
+                self._emit("ld", "a,l")
+                self._emit("cpl")
+                self._emit("ld", "l,a")
+                self._emit("ld", "a,h")
+                self._emit("cpl")
+                self._emit("ld", "h,a")
                 return DataType.ADDRESS
 
         elif expr.op == UnaryOp.LOW:
             # Value is in HL (ADDRESS) or A (BYTE from operand)
             if operand_type == DataType.ADDRESS:
-                self._emit("MOV", "A,L")  # Get low byte into A
+                self._emit("ld", "a,l")  # Get low byte into A
             # else: already in A from BYTE operand
             return DataType.BYTE
 
         elif expr.op == UnaryOp.HIGH:
             # Value is in HL (ADDRESS) or A (BYTE from operand)
             if operand_type == DataType.ADDRESS:
-                self._emit("MOV", "A,H")  # Get high byte into A
+                self._emit("ld", "a,h")  # Get high byte into A
             else:
-                self._emit("XRA", "A")  # BYTE has no high byte, return 0
+                self._emit("xor", "a")  # BYTE has no high byte, return 0
             return DataType.BYTE
 
         return DataType.ADDRESS
@@ -4466,14 +4463,14 @@ class CodeGenerator:
 
         if elem_type == DataType.ADDRESS:
             # Load 16-bit value: low byte first, then high byte
-            self._emit("MOV", "E,M")
-            self._emit("INX", "H")
-            self._emit("MOV", "D,M")
-            self._emit("XCHG")  # HL = value
+            self._emit("ld", "e,(hl)")
+            self._emit("inc", "hl")
+            self._emit("ld", "d,(hl)")
+            self._emit("ex", "de,hl")  # HL = value
             return DataType.ADDRESS
         else:
             # Load BYTE value into A
-            self._emit("MOV", "A,M")
+            self._emit("ld", "a,(hl)")
             return DataType.BYTE
 
     def _gen_subscript_addr(self, expr: SubscriptExpr) -> None:
@@ -4497,13 +4494,13 @@ class CodeGenerator:
         if isinstance(expr.base, Identifier) and isinstance(expr.index, NumberLiteral):
             sym = self.symbols.lookup(expr.base.name)
             if sym and not sym.based_on:
-                # Regular array with constant index - can fold: LXI H,label+offset
+                # Regular array with constant index - can fold: ld hl,label+offset
                 asm_name = sym.asm_name if sym.asm_name else self._mangle_name(expr.base.name)
                 offset = expr.index.value * elem_size
                 if offset == 0:
-                    self._emit("LXI", f"H,{asm_name}")
+                    self._emit("ld", f"hl,{asm_name}")
                 else:
-                    self._emit("LXI", f"H,{asm_name}+{offset}")
+                    self._emit("ld", f"hl,{asm_name}+{offset}")
                 return
 
         # Check for optimized BYTE index path first (avoids loading base into HL)
@@ -4513,18 +4510,18 @@ class CodeGenerator:
                 # Optimized byte index with identifier base
                 # Evaluate index first (before loading base), then load base into DE
                 self._gen_expr(expr.index)  # A = index (byte)
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")  # HL = index (zero-extended)
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")  # HL = index (zero-extended)
                 # Load base directly into DE
                 sym = self.symbols.lookup(expr.base.name)
                 if sym and sym.based_on:
                     base_sym = self.symbols.lookup(sym.based_on)
                     base_asm_name = base_sym.asm_name if base_sym and base_sym.asm_name else self._mangle_name(sym.based_on)
-                    self._emit("LDED", base_asm_name)  # Z80: LD DE,(addr)
+                    self._emit("ld", f"de,({base_asm_name})")  # Z80: ld de,(addr)
                 else:
                     asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(expr.base.name)
-                    self._emit("LXI", f"D,{asm_name}")
-                self._emit("DAD", "D")  # HL = index + base
+                    self._emit("ld", f"de,{asm_name}")
+                self._emit("add", "hl,de")  # HL = index + base
                 return
 
         # Get base address (non-constant or BASED variable case)
@@ -4534,11 +4531,11 @@ class CodeGenerator:
                 # BASED variable - load the base pointer from the based_on variable
                 base_sym = self.symbols.lookup(sym.based_on)
                 base_asm_name = base_sym.asm_name if base_sym and base_sym.asm_name else self._mangle_name(sym.based_on)
-                self._emit("LHLD", base_asm_name)
+                self._emit("ld", f"hl,({base_asm_name})")
             else:
                 # Regular array - use address of array
                 asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(expr.base.name)
-                self._emit("LXI", f"H,{asm_name}")
+                self._emit("ld", f"hl,{asm_name}")
         else:
             self._gen_expr(expr.base)
 
@@ -4549,43 +4546,43 @@ class CodeGenerator:
                 # Index 0 - base address is already correct
                 pass
             elif offset <= 255:
-                # Small offset - can use LXI D,offset; DAD D
-                self._emit("LXI", f"D,{offset}")
-                self._emit("DAD", "D")
+                # Small offset - can use ld de,offset; add hl,DE
+                self._emit("ld", f"de,{offset}")
+                self._emit("add", "hl,de")
             else:
                 # Large offset
-                self._emit("LXI", f"D,{offset}")
-                self._emit("DAD", "D")
+                self._emit("ld", f"de,{offset}")
+                self._emit("add", "hl,de")
         else:
             # Variable index with complex base or ADDRESS index
             idx_type = self._get_expr_type(expr.index)
 
             if idx_type == DataType.BYTE and elem_size == 1:
                 # BYTE index - base is in HL, swap to DE, get index
-                self._emit("XCHG")  # DE = base
+                self._emit("ex", "de,hl")  # DE = base
                 self._gen_expr(expr.index)  # A = index (byte)
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")  # HL = index (zero-extended)
-                self._emit("DAD", "D")  # HL = index + base
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")  # HL = index (zero-extended)
+                self._emit("add", "hl,de")  # HL = index + base
             else:
                 # General case with PUSH/POP
-                self._emit("PUSH", "H")  # Save base
+                self._emit("push", "hl")  # Save base
 
                 # Get index
                 result_type = self._gen_expr(expr.index)
 
                 # If index was BYTE (in A), extend to HL
                 if result_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
 
                 if elem_size == 2:
                     # Multiply index by 2
-                    self._emit("DAD", "H")
+                    self._emit("add", "hl,hl")
 
                 # Add index to base
-                self._emit("POP", "D")
-                self._emit("DAD", "D")
+                self._emit("pop", "de")
+                self._emit("add", "hl,de")
 
     def _get_member_info(self, expr: MemberExpr) -> tuple[int, DataType]:
         """Get offset and type for a structure member."""
@@ -4615,16 +4612,16 @@ class CodeGenerator:
 
         if member_type == DataType.ADDRESS:
             # Load 16-bit value
-            self._emit("MOV", "E,M")
-            self._emit("INX", "H")
-            self._emit("MOV", "D,M")
-            self._emit("XCHG")  # HL = value
+            self._emit("ld", "e,(hl)")
+            self._emit("inc", "hl")
+            self._emit("ld", "d,(hl)")
+            self._emit("ex", "de,hl")  # HL = value
             return DataType.ADDRESS
         else:
             # Load 8-bit value
-            self._emit("MOV", "A,M")
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "a,(hl)")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
     def _gen_member_addr(self, expr: MemberExpr) -> None:
@@ -4635,8 +4632,8 @@ class CodeGenerator:
 
         # Add offset to base address (in HL)
         if offset > 0:
-            self._emit("LXI", f"D,{offset}")
-            self._emit("DAD", "D")
+            self._emit("ld", f"de,{offset}")
+            self._emit("add", "hl,de")
 
     def _gen_call_expr(self, expr: CallExpr) -> DataType:
         """Generate code for function call expression or array subscript.
@@ -4706,15 +4703,15 @@ class CodeGenerator:
                         pass
 
                 if func_num is not None and func_num <= 255:
-                    # Generate direct BDOS call: MVI C,func; LXI D,addr; CALL 5
-                    self._emit("MVI", f"C,{self._format_number(func_num)}")
+                    # Generate direct BDOS call: ld c,func; ld de,addr; CALL 5
+                    self._emit("ld", f"c,{self._format_number(func_num)}")
                     addr_type = self._gen_expr(addr_arg)
                     if addr_type == DataType.BYTE:
                         # BYTE arg goes in E; BDOS ignores D for byte-only functions
-                        self._emit("MOV", "E,A")
+                        self._emit("ld", "e,a")
                     else:
-                        self._emit("XCHG")  # DE = addr
-                    self._emit("CALL", "5")  # BDOS entry point
+                        self._emit("ex", "de,hl")  # DE = addr
+                    self._emit("call", "5")  # BDOS entry point
                     # Result in A for MON2 (BYTE), HL for MON3 (ADDRESS)
                     # MON1 is void but returns whatever was in registers
                     return DataType.BYTE if name.upper() == 'MON2' else DataType.ADDRESS
@@ -4729,9 +4726,9 @@ class CodeGenerator:
             for arg in expr.args:
                 arg_type = self._gen_expr(arg)
                 if arg_type == DataType.BYTE:
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
-                self._emit("PUSH", "H")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("push", "hl")
         else:
             # Direct memory parameter passing (non-reentrant)
             # Last param is passed in register (A for BYTE, HL for ADDRESS)
@@ -4749,18 +4746,18 @@ class CodeGenerator:
                         # Optimize constants for BYTE
                         if param_type == DataType.BYTE:
                             if isinstance(arg, NumberLiteral) and arg.value <= 255:
-                                self._emit("MVI", f"A,{self._format_number(arg.value)}")
+                                self._emit("ld", f"a,{self._format_number(arg.value)}")
                                 continue
                             elif isinstance(arg, StringLiteral) and len(arg.value) == 1:
-                                self._emit("MVI", f"A,{self._format_number(ord(arg.value[0]))}")
+                                self._emit("ld", f"a,{self._format_number(ord(arg.value[0]))}")
                                 continue
                         # Evaluate arg - result in A (BYTE) or HL (ADDRESS)
                         arg_type = self._gen_expr(arg)
                         if param_type == DataType.BYTE and arg_type == DataType.ADDRESS:
-                            self._emit("MOV", "A,L")
+                            self._emit("ld", "a,l")
                         elif param_type == DataType.ADDRESS and arg_type == DataType.BYTE:
-                            self._emit("MOV", "L,A")
-                            self._emit("MVI", "H,0")
+                            self._emit("ld", "l,a")
+                            self._emit("ld", "h,0")
                         continue
 
                     # Non-last params: store to memory
@@ -4775,36 +4772,36 @@ class CodeGenerator:
                             proc_base = proc_base[1:]
                         param_asm = f"@{proc_base}${self._mangle_name(param_name)}"
 
-                    # Optimize: for BYTE parameter with constant, use MVI A directly
+                    # Optimize: for BYTE parameter with constant, use ld a,n directly
                     if param_type == DataType.BYTE:
                         if isinstance(arg, NumberLiteral) and arg.value <= 255:
-                            self._emit("MVI", f"A,{self._format_number(arg.value)}")
-                            self._emit("STA", param_asm)
+                            self._emit("ld", f"a,{self._format_number(arg.value)}")
+                            self._emit("ld", f"({param_asm}),a")
                             continue
                         elif isinstance(arg, StringLiteral) and len(arg.value) == 1:
-                            self._emit("MVI", f"A,{self._format_number(ord(arg.value[0]))}")
-                            self._emit("STA", param_asm)
+                            self._emit("ld", f"a,{self._format_number(ord(arg.value[0]))}")
+                            self._emit("ld", f"({param_asm}),a")
                             continue
 
                     arg_type = self._gen_expr(arg)
                     if param_type == DataType.BYTE or arg_type == DataType.BYTE:
                         # For BYTE param, ensure we have result in A
                         if arg_type == DataType.ADDRESS:
-                            self._emit("MOV", "A,L")
-                        self._emit("STA", param_asm)
+                            self._emit("ld", "a,l")
+                        self._emit("ld", f"({param_asm}),a")
                     else:
-                        self._emit("SHLD", param_asm)
+                        self._emit("ld", f"({param_asm}),hl")
 
         if isinstance(expr.callee, Identifier):
-            self._emit("CALL", call_name)
+            self._emit("call", call_name)
         else:
             self._gen_expr(expr.callee)
-            self._emit("PCHL")
+            self._emit("jp", "(hl)")
 
         # Clean up stack - only for stack-based calls
         if use_stack and expr.args:
             for _ in expr.args:
-                self._emit("POP", "D")  # Dummy pop
+                self._emit("pop", "de")  # Dummy pop
 
         # Result is in HL (or A for BYTE)
         return sym.return_type if sym and sym.return_type else DataType.ADDRESS
@@ -4829,16 +4826,16 @@ class CodeGenerator:
                             pass
 
                 if port_num is not None:
-                    self._emit("IN", self._format_number(port_num))
+                    self._emit("in", f"a,({self._format_number(port_num)})")
                 else:
                     # Variable port - need runtime support (rare in practice)
                     self._gen_expr(arg)
-                    self._emit("CALL", "??INP")
-                    self.needs_runtime.add("??INP")
+                    self._emit("call", "??inp")
+                    self.needs_runtime.add("inp")
             else:
-                self._emit("IN", "0")
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+                self._emit("in", "a,(0)")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         if name == "LOW":
@@ -4848,16 +4845,16 @@ class CodeGenerator:
                 if self.a_has_l:
                     self.a_has_l = False  # Consume the flag
                 else:
-                    self._emit("MOV", "A,L")  # Get low byte into A
+                    self._emit("ld", "a,l")  # Get low byte into A
             # else: already in A from BYTE operand
             return DataType.BYTE
 
         if name == "HIGH":
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.ADDRESS:
-                self._emit("MOV", "A,H")  # Get high byte into A
+                self._emit("ld", "a,h")  # Get high byte into A
             else:
-                self._emit("XRA", "A")  # BYTE has no high byte, return 0
+                self._emit("xor", "a")  # BYTE has no high byte, return 0
             return DataType.BYTE
 
         if name == "DOUBLE":
@@ -4865,12 +4862,12 @@ class CodeGenerator:
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to H and clear L
-                self._emit("MOV", "H,A")
-                self._emit("MVI", "L,0")
+                self._emit("ld", "h,a")
+                self._emit("ld", "l,0")
             else:
                 # ADDRESS value - shift left by 8 (multiply by 256)
-                self._emit("MOV", "H,L")
-                self._emit("MVI", "L,0")
+                self._emit("ld", "h,l")
+                self._emit("ld", "l,0")
             return DataType.ADDRESS
 
         if name == "SHL":
@@ -4889,45 +4886,45 @@ class CodeGenerator:
                 arg_type = self._gen_expr(args[0])  # Value in HL (or A if BYTE)
                 if arg_type == DataType.BYTE:
                     # BYTE value is in A, move to HL
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
 
                 if shift_count == 0:
                     pass  # No shift needed
                 elif shift_count >= 8:
                     # Shift by 8+: L goes to H, L becomes 0, then shift H left
-                    self._emit("MOV", "H,L")  # H = L (shift by 8)
-                    self._emit("MVI", "L,0")
+                    self._emit("ld", "h,l")  # H = L (shift by 8)
+                    self._emit("ld", "l,0")
                     remaining = shift_count - 8
                     for _ in range(remaining):
-                        self._emit("DAD", "H")  # HL *= 2
+                        self._emit("add", "hl,hl")  # HL *= 2
                 else:
-                    # Inline DAD H for shifts 1-7 (1 byte each, no loop overhead)
+                    # Inline add hl,HL for shifts 1-7 (1 byte each, no loop overhead)
                     for _ in range(shift_count):
-                        self._emit("DAD", "H")  # HL *= 2
+                        self._emit("add", "hl,hl")  # HL *= 2
                 # TODO: Investigate root cause. MUL16 zeroes DE as side effect,
-                # and some code path relies on this. Without this LXI D,0,
+                # and some code path relies on this. Without this ld de,0,
                 # strength-reduced multiplications fail. See tests/bug_80un.plm.
-                self._emit("LXI", "D,0")
+                self._emit("ld", "de,0")
                 return DataType.ADDRESS
 
             # Variable shift - use loop
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")  # Count in C
-            self._emit("POP", "H")   # Value in HL
+            self._emit("ld", "c,l")  # Count in C
+            self._emit("pop", "hl")   # Value in HL
             shift_loop = self._new_label("SHL")
             end_label = self._new_label("SHLE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("DAD", "H")  # HL = HL * 2
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("add", "hl,hl")  # HL = HL * 2
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
             return DataType.ADDRESS
 
@@ -4947,8 +4944,8 @@ class CodeGenerator:
                 arg_type = self._gen_expr(args[0])  # Value in HL (or A if BYTE)
                 if arg_type == DataType.BYTE:
                     # BYTE value is in A, move to HL
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
 
                 if shift_count == 0:
                     pass  # No shift needed
@@ -4957,61 +4954,60 @@ class CodeGenerator:
                     remaining = shift_count - 8
                     if remaining == 0:
                         # Exact shift by 8
-                        self._emit("MOV", "L,H")  # L = H
-                        self._emit("MVI", "H,0")
+                        self._emit("ld", "l,h")  # L = H
+                        self._emit("ld", "h,0")
                     elif self.target == Target.Z80 and remaining <= 4:
                         # Z80: use SRL which doesn't need carry clearing
-                        # Note: SRL is Z80-only, no 8080 equivalent, so we emit it directly
-                        # But use 8080 mnemonics for LD/MOV so peephole can optimize
-                        self._emit("MOV", "A,H")
+                        # Note: SRL is Z80-only instruction
+                        self._emit("ld", "a,h")
                         for _ in range(remaining):
-                            self._emit("SRL", "A")  # Z80-only instruction
-                        self._emit("MOV", "L,A")
-                        self._emit("MVI", "H,0")
+                            self._emit("srl", "a")  # Z80-only instruction
+                        self._emit("ld", "l,a")
+                        self._emit("ld", "h,0")
                     else:
-                        # 8080 or larger shifts: load H into A, shift, store
-                        self._emit("MOV", "A,H")
+                        # Larger shifts (>4): load H into A, shift, store
+                        self._emit("ld", "a,h")
                         for _ in range(remaining):
-                            self._emit("ORA", "A")  # Clear carry
-                            self._emit("RAR")
-                        self._emit("MOV", "L,A")
-                        self._emit("MVI", "H,0")
+                            self._emit("or", "a")  # Clear carry
+                            self._emit("rra")
+                        self._emit("ld", "l,a")
+                        self._emit("ld", "h,0")
                 elif shift_count == 7:
                     # Special case for shift by 7: result = (H << 1) | (L >> 7)
                     # This is faster than 7 iterations
                     # RLC sets carry from bit 7, so no need to clear carry first
-                    self._emit("MOV", "A,L")
-                    self._emit("RLC")        # Carry = bit 7 of L (A also rotated but we discard it)
-                    self._emit("MOV", "A,H")
-                    self._emit("RAL")        # A = (H << 1) | carry
-                    self._emit("MOV", "L,A")
-                    self._emit("MVI", "H,0")
+                    self._emit("ld", "a,l")
+                    self._emit("rlca")        # Carry = bit 7 of L (A also rotated but we discard it)
+                    self._emit("ld", "a,h")
+                    self._emit("rla")        # A = (H << 1) | carry
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
                 elif shift_count <= 3:
                     # Small shifts: inline the loop
                     for _ in range(shift_count):
-                        self._emit("ORA", "A")  # Clear carry
-                        self._emit("MOV", "A,H")
-                        self._emit("RAR")
-                        self._emit("MOV", "H,A")
-                        self._emit("MOV", "A,L")
-                        self._emit("RAR")
-                        self._emit("MOV", "L,A")
+                        self._emit("or", "a")  # Clear carry
+                        self._emit("ld", "a,h")
+                        self._emit("rra")
+                        self._emit("ld", "h,a")
+                        self._emit("ld", "a,l")
+                        self._emit("rra")
+                        self._emit("ld", "l,a")
                 else:
                     # For 4-6 shifts, use a counted loop
-                    self._emit("MVI", f"C,{shift_count}")
+                    self._emit("ld", f"c,{shift_count}")
                     shift_loop = self._new_label("SHR")
                     end_label = self._new_label("SHRE")
                     self._emit_label(shift_loop)
-                    self._emit("DCR", "C")
-                    self._emit("JM", end_label)
-                    self._emit("ORA", "A")
-                    self._emit("MOV", "A,H")
-                    self._emit("RAR")
-                    self._emit("MOV", "H,A")
-                    self._emit("MOV", "A,L")
-                    self._emit("RAR")
-                    self._emit("MOV", "L,A")
-                    self._emit("JMP", shift_loop)
+                    self._emit("dec", "c")
+                    self._emit("jp", f"m,{end_label}")
+                    self._emit("or", "a")
+                    self._emit("ld", "a,h")
+                    self._emit("rra")
+                    self._emit("ld", "h,a")
+                    self._emit("ld", "a,l")
+                    self._emit("rra")
+                    self._emit("ld", "l,a")
+                    self._emit("jp", shift_loop)
                     self._emit_label(end_label)
                 return DataType.ADDRESS
 
@@ -5019,25 +5015,25 @@ class CodeGenerator:
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")
-            self._emit("POP", "H")
+            self._emit("ld", "c,l")
+            self._emit("pop", "hl")
             shift_loop = self._new_label("SHR")
             end_label = self._new_label("SHRE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("ORA", "A")  # Clear carry
-            self._emit("MOV", "A,H")
-            self._emit("RAR")
-            self._emit("MOV", "H,A")
-            self._emit("MOV", "A,L")
-            self._emit("RAR")
-            self._emit("MOV", "L,A")
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("or", "a")  # Clear carry
+            self._emit("ld", "a,h")
+            self._emit("rra")
+            self._emit("ld", "h,a")
+            self._emit("ld", "a,l")
+            self._emit("rra")
+            self._emit("ld", "l,a")
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
             return DataType.ADDRESS
 
@@ -5045,46 +5041,46 @@ class CodeGenerator:
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")
-            self._emit("POP", "H")
-            self._emit("MOV", "A,L")
+            self._emit("ld", "c,l")
+            self._emit("pop", "hl")
+            self._emit("ld", "a,l")
             shift_loop = self._new_label("ROL")
             end_label = self._new_label("ROLE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("RLC")
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("rlca")
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         if name == "ROR":
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")
-            self._emit("POP", "H")
-            self._emit("MOV", "A,L")
+            self._emit("ld", "c,l")
+            self._emit("pop", "hl")
+            self._emit("ld", "a,l")
             shift_loop = self._new_label("ROR")
             end_label = self._new_label("RORE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("RRC")
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("rrca")
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         if name == "LENGTH":
@@ -5092,9 +5088,9 @@ class CodeGenerator:
             if args and isinstance(args[0], Identifier):
                 sym = self.symbols.lookup(args[0].name)
                 if sym and sym.dimension:
-                    self._emit("LXI", f"H,{sym.dimension}")
+                    self._emit("ld", f"hl,{sym.dimension}")
                     return DataType.ADDRESS
-            self._emit("LXI", "H,0")
+            self._emit("ld", "hl,0")
             return DataType.ADDRESS
 
         if name == "LAST":
@@ -5102,9 +5098,9 @@ class CodeGenerator:
             if args and isinstance(args[0], Identifier):
                 sym = self.symbols.lookup(args[0].name)
                 if sym and sym.dimension:
-                    self._emit("LXI", f"H,{sym.dimension - 1}")
+                    self._emit("ld", f"hl,{sym.dimension - 1}")
                     return DataType.ADDRESS
-            self._emit("LXI", "H,0")
+            self._emit("ld", "hl,0")
             return DataType.ADDRESS
 
         if name == "SIZE":
@@ -5112,9 +5108,9 @@ class CodeGenerator:
             if args and isinstance(args[0], Identifier):
                 sym = self.symbols.lookup(args[0].name)
                 if sym:
-                    self._emit("LXI", f"H,{sym.size}")
+                    self._emit("ld", f"hl,{sym.size}")
                     return DataType.ADDRESS
-            self._emit("LXI", "H,0")
+            self._emit("ld", "hl,0")
             return DataType.ADDRESS
 
         if name == "MEMORY":
@@ -5123,23 +5119,23 @@ class CodeGenerator:
             self.needs_end_symbol = True
             if isinstance(args[0], NumberLiteral) and args[0].value == 0:
                 # MEMORY(0) - just use __END__ directly
-                self._emit("LXI", "H,__END__")
+                self._emit("ld", "hl,__END__")
             else:
                 # MEMORY(n) - compute __END__ + n
                 self._gen_expr(args[0])  # HL = offset
-                self._emit("LXI", "D,__END__")
-                self._emit("DAD", "D")  # HL = __END__ + offset
+                self._emit("ld", "de,__END__")
+                self._emit("add", "hl,de")  # HL = __END__ + offset
             # Load byte from (HL)
-            self._emit("MOV", "A,M")
+            self._emit("ld", "a,(hl)")
             return DataType.BYTE
 
         if name == "MOVE":
             # MOVE(count, source, dest)
-            self.needs_runtime.add("MOVE")
+            self.needs_runtime.add("move")
             for arg in args:
                 self._gen_expr(arg)
-                self._emit("PUSH", "H")
-            self._emit("CALL", "??MOVE")
+                self._emit("push", "hl")
+            self._emit("call", "??move")
             # Clean up - MOVE does its own stack cleanup
             return None
 
@@ -5148,29 +5144,29 @@ class CodeGenerator:
             self._gen_expr(args[0])
             loop_label = self._new_label("TIME")
             self._emit_label(loop_label)
-            self._emit("DCX", "H")
-            self._emit("MOV", "A,H")
-            self._emit("ORA", "L")
-            self._emit("JNZ", loop_label)
+            self._emit("dec", "hl")
+            self._emit("ld", "a,h")
+            self._emit("or", "l")
+            self._emit("jp", f"nz,{loop_label}")
             return None
 
         if name == "CARRY":
             # Return carry flag value
-            self._emit("MVI", "A,0")
-            self._emit("RAL")  # Rotate carry into A
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "a,0")
+            self._emit("rla")  # Rotate carry into A
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         if name == "ZERO":
             # Return zero flag value
             true_label = self._new_label("ZF")
             end_label = self._new_label("ZFE")
-            self._emit("JZ", true_label)
-            self._emit("LXI", "H,0")
-            self._emit("JMP", end_label)
+            self._emit("jp", f"z,{true_label}")
+            self._emit("ld", "hl,0")
+            self._emit("jp", end_label)
             self._emit_label(true_label)
-            self._emit("LXI", "H,0FFH")
+            self._emit("ld", "hl,0ffh")
             self._emit_label(end_label)
             return DataType.BYTE
 
@@ -5178,11 +5174,11 @@ class CodeGenerator:
             # Return sign flag value
             true_label = self._new_label("SF")
             end_label = self._new_label("SFE")
-            self._emit("JM", true_label)
-            self._emit("LXI", "H,0")
-            self._emit("JMP", end_label)
+            self._emit("jp", f"m,{true_label}")
+            self._emit("ld", "hl,0")
+            self._emit("jp", end_label)
             self._emit_label(true_label)
-            self._emit("LXI", "H,0FFH")
+            self._emit("ld", "hl,0ffh")
             self._emit_label(end_label)
             return DataType.BYTE
 
@@ -5190,11 +5186,11 @@ class CodeGenerator:
             # Return parity flag value
             true_label = self._new_label("PF")
             end_label = self._new_label("PFE")
-            self._emit("JPE", true_label)
-            self._emit("LXI", "H,0")
-            self._emit("JMP", end_label)
+            self._emit("jp", f"pe,{true_label}")
+            self._emit("ld", "hl,0")
+            self._emit("jp", end_label)
             self._emit_label(true_label)
-            self._emit("LXI", "H,0FFH")
+            self._emit("ld", "hl,0ffh")
             self._emit_label(end_label)
             return DataType.BYTE
 
@@ -5203,10 +5199,10 @@ class CodeGenerator:
             # Values 10-15 wrap to produce '0'-'5'
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.ADDRESS:
-                self._emit("MOV", "A,L")  # Get low byte from L
+                self._emit("ld", "a,l")  # Get low byte from L
             # else arg_type == BYTE, value already in A
-            self._emit("ANI", "0FH")  # Mask to 0-15
-            self._emit("ADI", "30H")  # Add '0' ASCII code
+            self._emit("and", "0fh")  # Mask to 0-15
+            self._emit("add", "a,30h")  # Add '0' ASCII code
             return DataType.BYTE
 
         if name == "SCL":
@@ -5214,23 +5210,23 @@ class CodeGenerator:
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")
-            self._emit("POP", "H")
-            self._emit("MOV", "A,L")
+            self._emit("ld", "c,l")
+            self._emit("pop", "hl")
+            self._emit("ld", "a,l")
             shift_loop = self._new_label("SCL")
             end_label = self._new_label("SCLE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("RAL")  # Rotate through carry
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("rla")  # Rotate through carry
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         if name == "SCR":
@@ -5238,23 +5234,23 @@ class CodeGenerator:
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.BYTE:
                 # BYTE value is in A, move to HL
-                self._emit("MOV", "L,A")
-                self._emit("MVI", "H,0")
-            self._emit("PUSH", "H")
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+            self._emit("push", "hl")
             self._gen_expr(args[1])
-            self._emit("MOV", "C,L")
-            self._emit("POP", "H")
-            self._emit("MOV", "A,L")
+            self._emit("ld", "c,l")
+            self._emit("pop", "hl")
+            self._emit("ld", "a,l")
             shift_loop = self._new_label("SCR")
             end_label = self._new_label("SCRE")
             self._emit_label(shift_loop)
-            self._emit("DCR", "C")
-            self._emit("JM", end_label)
-            self._emit("RAR")  # Rotate through carry
-            self._emit("JMP", shift_loop)
+            self._emit("dec", "c")
+            self._emit("jp", f"m,{end_label}")
+            self._emit("rra")  # Rotate through carry
+            self._emit("jp", shift_loop)
             self._emit_label(end_label)
-            self._emit("MOV", "L,A")
-            self._emit("MVI", "H,0")
+            self._emit("ld", "l,a")
+            self._emit("ld", "h,0")
             return DataType.BYTE
 
         # Not a built-in we handle inline
@@ -5270,7 +5266,7 @@ class CodeGenerator:
             # In PL/M-80, .MEMORY gives the first free byte after all variables
             if name.upper() == "MEMORY":
                 self.needs_end_symbol = True
-                self._emit("LXI", "H,__END__")
+                self._emit("ld", "hl,__END__")
                 return DataType.ADDRESS
 
             # Check for LITERALLY macro - expand recursively
@@ -5279,7 +5275,7 @@ class CodeGenerator:
                 try:
                     # Numeric literal - load as immediate address
                     val = self._parse_plm_number(macro_val)
-                    self._emit("LXI", f"H,{self._format_number(val)}")
+                    self._emit("ld", f"hl,{self._format_number(val)}")
                     return DataType.ADDRESS
                 except ValueError:
                     # Non-numeric literal - recursively process
@@ -5290,15 +5286,15 @@ class CodeGenerator:
             # Handle reentrant procedure parameters/locals (IX-relative)
             if sym and sym.stack_offset is not None:
                 # Compute address: HL = IX + offset
-                # PUSH IX; POP HL; LD DE,offset; ADD HL,DE
-                self._emit("PUSH", "IX")
-                self._emit("POP", "HL")
+                # push IX; POP HL; ld de,offset; add hl,DE
+                self._emit("push", "ix")
+                self._emit("pop", "hl")
                 if sym.stack_offset != 0:
-                    self._emit("LD", f"DE,{sym.stack_offset}")
-                    self._emit("ADD", "HL,DE")
+                    self._emit("ld", f"de,{sym.stack_offset}")
+                    self._emit("add", "hl,de")
             else:
                 asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
-                self._emit("LXI", f"H,{asm_name}")
+                self._emit("ld", f"hl,{asm_name}")
         elif isinstance(operand, SubscriptExpr):
             self._gen_subscript_addr(operand)
         elif isinstance(operand, MemberExpr):
@@ -5307,7 +5303,7 @@ class CodeGenerator:
             # .('string') - address of inline string
             label = self._new_string_label()
             self.string_literals.append((label, operand.value))
-            self._emit("LXI", f"H,{label}")
+            self._emit("ld", f"hl,{label}")
         elif isinstance(operand, ConstListExpr):
             # .(const, const, ...) - address of inline data
             label = self._new_label("DATA")
@@ -5315,13 +5311,13 @@ class CodeGenerator:
             for val in operand.values:
                 if isinstance(val, NumberLiteral):
                     self.data_segment.append(
-                        AsmLine(opcode="DB", operands=self._format_number(val.value))
+                        AsmLine(opcode="db", operands=self._format_number(val.value))
                     )
                 elif isinstance(val, StringLiteral):
                     self.data_segment.append(
-                        AsmLine(opcode="DB", operands=self._escape_string(val.value))
+                        AsmLine(opcode="db", operands=self._escape_string(val.value))
                     )
-            self._emit("LXI", f"H,{label}")
+            self._emit("ld", f"hl,{label}")
         elif isinstance(operand, CallExpr):
             # Check if this is actually an array subscript (parser creates CallExpr for arr(idx))
             if isinstance(operand.callee, Identifier) and len(operand.args) == 1:
