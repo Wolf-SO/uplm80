@@ -11,6 +11,7 @@ Performs high-level optimizations on the AST before code generation:
 """
 
 from copy import deepcopy
+from dataclasses import dataclass
 
 from .ast_nodes import (
     ASTNode,

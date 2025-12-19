@@ -4914,8 +4914,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")  # Count in C
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")   # Value in HL
             shift_loop = self._new_label("SHL")
             end_label = self._new_label("SHLE")
@@ -5017,8 +5020,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")
             shift_loop = self._new_label("SHR")
             end_label = self._new_label("SHRE")
@@ -5043,8 +5049,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")
             self._emit("ld", "a,l")
             shift_loop = self._new_label("ROL")
@@ -5066,8 +5075,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")
             self._emit("ld", "a,l")
             shift_loop = self._new_label("ROR")
@@ -5212,8 +5224,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")
             self._emit("ld", "a,l")
             shift_loop = self._new_label("SCL")
@@ -5236,8 +5251,11 @@ class CodeGenerator:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
-            self._gen_expr(args[1])
-            self._emit("ld", "c,l")
+            count_type = self._gen_expr(args[1])
+            if count_type == DataType.BYTE:
+                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            else:
+                self._emit("ld", "c,l")  # Count in C (from L for address)
             self._emit("pop", "hl")
             self._emit("ld", "a,l")
             shift_loop = self._new_label("SCR")
