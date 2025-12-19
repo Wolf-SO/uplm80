@@ -87,14 +87,6 @@ When multiple files are provided:
 
 This produces better code than compiling files separately, as the compiler can share local variable storage between procedures in different modules that never call each other.
 
-### Post-Assembly Optimization (Optional)
-
-```bash
-python -m uplm80.postopt output.mac -o output_opt.mac
-```
-
-Performs multi-pass tail merging and skip trick optimizations.
-
 ### Assemble and Link
 
 Use your preferred 8080/Z80 assembler and linker. Example with um80/ul80:
@@ -223,7 +215,6 @@ uplm80/
 ├── ast_nodes.py   # AST definitions
 ├── codegen.py     # Code generator
 ├── peephole.py    # Peephole optimizer
-├── postopt.py     # Post-assembly optimizer
 └── symbols.py     # Symbol table
 ```
 
