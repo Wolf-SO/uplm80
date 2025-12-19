@@ -12,14 +12,12 @@ from . import __version__
 from .lexer import Lexer
 from .parser import Parser
 from .codegen import CodeGenerator, Target, Mode
-from .postopt import optimize_asm as postopt_optimize
 from .errors import CompilerError, ErrorCollector
 
 # Import AST optimizer (PL/M-80 specific)
 from .ast_optimizer import ASTOptimizer
-# Import peephole optimizer from upeep80 library (language-agnostic)
-from upeep80 import PeepholeOptimizer, InputSyntax
-from upeep80.peephole import Target as PeepholeTarget
+# Import peephole optimizer from upeepz80 library (Z80 in/out)
+from upeepz80 import PeepholeOptimizer
 
 
 class Compiler:
@@ -32,7 +30,6 @@ class Compiler:
     3. AST Optimizer: AST -> Optimized AST
     4. Code Generator: AST -> Assembly
     5. Peephole Optimizer: Assembly -> Optimized Assembly
-    6. Post-Assembly Optimizer: Tail merging, skip trick
     """
 
     def __init__(
@@ -118,25 +115,12 @@ class Compiler:
                 if self.debug:
                     print("[DEBUG] Phase 5: Peephole Optimization", file=sys.stderr)
 
-                # Convert codegen Target to peephole Target (different enum types)
-                # PL/M-80 codegen uses 8080 mnemonics, so specify I8080 input syntax
-                peep_target = PeepholeTarget.Z80 if self.target == Target.Z80 else PeepholeTarget.I8080
-                peephole = PeepholeOptimizer(peep_target, input_syntax=InputSyntax.I8080)
+                peephole = PeepholeOptimizer()
                 asm_code = peephole.optimize(asm_code)
 
                 if self.debug:
                     for pattern, count in peephole.stats.items():
                         print(f"[DEBUG]   {pattern}: {count} applied", file=sys.stderr)
-
-            # Phase 6: Post-Assembly Optimization (tail merging)
-            if self.opt_level >= 2:
-                if self.debug:
-                    print("[DEBUG] Phase 6: Post-Assembly Optimization", file=sys.stderr)
-
-                asm_code, savings = postopt_optimize(asm_code, verbose=self.debug)
-
-                if self.debug and savings > 0:
-                    print(f"[DEBUG]   Tail merging saved {savings} bytes", file=sys.stderr)
 
             return asm_code
 
@@ -243,15 +227,8 @@ class Compiler:
                 if self.debug:
                     print("[DEBUG] Phase 5: Peephole Optimization", file=sys.stderr)
 
-                peep_target = PeepholeTarget.Z80 if self.target == Target.Z80 else PeepholeTarget.I8080
-                peephole = PeepholeOptimizer(peep_target, input_syntax=InputSyntax.I8080)
+                peephole = PeepholeOptimizer()
                 asm_code = peephole.optimize(asm_code)
-
-            # Phase 6: Post-Assembly Optimization
-            if self.opt_level >= 2:
-                if self.debug:
-                    print("[DEBUG] Phase 6: Post-Assembly Optimization", file=sys.stderr)
-                asm_code, savings = postopt_optimize(asm_code, verbose=self.debug)
 
             # Determine output path
             if output_path is None:
@@ -278,7 +255,7 @@ def main() -> None:
     """Main entry point for the uplm80 compiler."""
     parser = argparse.ArgumentParser(
         prog="uplm80",
-        description="Highly optimizing PL/M-80 compiler targeting 8080/Z80",
+        description="Highly optimizing PL/M-80 compiler targeting Z80",
     )
 
     parser.add_argument(
@@ -299,13 +276,6 @@ def main() -> None:
         type=Path,
         default=None,
         help="Output assembly file (.mac)",
-    )
-
-    parser.add_argument(
-        "-t", "--target",
-        choices=["8080", "z80"],
-        default="z80",
-        help="Target processor (default: z80)",
     )
 
     parser.add_argument(
@@ -340,23 +310,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # TEMPORARY: Force Z80 target during development
-    # DO NOT REMOVE THIS CHECK UNTIL A HUMAN SAYS OK
-    # Claude keeps accidentally switching to 8080 mode
-    if args.target == "8080":
-        print("ERROR: 8080 target is temporarily disabled during development.", file=sys.stderr)
-        print("Use -t z80 or wait for a human to re-enable 8080 support.", file=sys.stderr)
-        sys.exit(1)
-
-    # Select target
-    target = Target.Z80 if args.target == "z80" else Target.I8080
-
     # Select mode
     mode = Mode.CPM if args.mode == "cpm" else Mode.BARE
 
-    # Create compiler
+    # Create compiler (Z80 only)
     compiler = Compiler(
-        target=target,
+        target=Target.Z80,
         mode=mode,
         opt_level=args.optimize,
         debug=args.debug,
