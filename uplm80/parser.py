@@ -79,6 +79,35 @@ class Parser:
             # Default: try as Python literal (handles 0x, 0b, 0o prefixes)
             return int(s, 0)
 
+    def _expand_macro(self, text: str, max_depth: int = 10) -> str:
+        """Fully expand a macro string, including nested macro references.
+
+        This handles PL/M-80 LITERALLY macros that reference other macros,
+        such as structure definitions that span multiple macro expansions.
+        """
+        if max_depth <= 0:
+            return text  # Prevent infinite recursion
+
+        import re
+        # Pattern to match PL/M identifiers (including $ in names)
+        ident_pattern = re.compile(r'\b([A-Za-z_$][A-Za-z0-9_$]*)\b')
+
+        def replace_macro(match: re.Match) -> str:
+            name = match.group(1)
+            # Normalize name by removing $ (PL/M $ is just for readability)
+            # and converting to uppercase (macros are stored uppercase)
+            normalized = name.upper().replace("$", "")
+            if normalized in self.macros:
+                # Get macro value and strip quotes if present
+                value = self.macros[normalized].strip()
+                if value.startswith("'") and value.endswith("'"):
+                    value = value[1:-1]
+                # Recursively expand
+                return self._expand_macro(value, max_depth - 1)
+            return name
+
+        return ident_pattern.sub(replace_macro, text)
+
     def _error(self, message: str) -> ParserError:
         """Create a parser error at current position."""
         return ParserError(
@@ -164,6 +193,10 @@ class Parser:
                 if expansion == "DECLARE":
                     return True
         return False
+
+    def _check_declare(self) -> bool:
+        """Check if current token is DECLARE keyword or DCL abbreviation."""
+        return self._check(TokenType.DECLARE) or self._is_dcl_abbreviation()
 
     def _is_proc_abbreviation(self) -> bool:
         """Check if current identifier is a LITERALLY macro expanding to 'PROCEDURE'."""
@@ -502,7 +535,7 @@ class Parser:
 
         # DECLARE statement (can appear in statement position)
         # Also handle DCL abbreviation
-        if self._check(TokenType.DECLARE) or self._is_dcl_abbreviation():
+        if self._check_declare():
             decls = self._parse_declare()
             return DeclareStmt(decls, span=self._span_from(token))
 
@@ -682,7 +715,7 @@ class Parser:
         stmts: list[Stmt] = []
 
         # Parse declarations first
-        while self._check(TokenType.DECLARE):
+        while self._check_declare():
             decls.extend(self._parse_declare())
 
         # Then statements
@@ -715,7 +748,7 @@ class Parser:
 
     def _parse_declare(self) -> list[Declaration]:
         """Parse DECLARE statement (also handles DCL abbreviation)."""
-        if self._check(TokenType.DECLARE):
+        if self._check_declare():
             self._advance()
         elif self._check(TokenType.IDENTIFIER) and self.current.value == "DCL":
             self._advance()  # consume DCL
@@ -885,13 +918,31 @@ class Parser:
             # Check if this is a LITERALLY macro for a type
             type_name = self.current.value
             if type_name in self.macros:
-                expansion = self.macros[type_name].strip().upper()
-                if expansion == "BYTE":
+                # Fully expand the macro (including nested macros)
+                expansion = self._expand_macro(self.macros[type_name])
+                # Normalize whitespace and strip quotes
+                expansion = " ".join(expansion.split()).strip()
+                if expansion.startswith("'") and expansion.endswith("'"):
+                    expansion = expansion[1:-1]
+                expansion_upper = expansion.upper()
+
+                if expansion_upper == "BYTE":
                     self._advance()
                     data_type = DataType.BYTE
-                elif expansion == "ADDRESS":
+                elif expansion_upper == "ADDRESS":
                     self._advance()
                     data_type = DataType.ADDRESS
+                elif expansion_upper.startswith("STRUCTURE"):
+                    # Macro expands to a structure definition
+                    self._advance()  # Consume the macro name
+                    # Parse the expanded structure definition
+                    lexer = Lexer(expansion, f"<macro:{type_name}>")
+                    macro_tokens = lexer.tokenize()
+                    sub_parser = Parser(macro_tokens, f"<macro:{type_name}>")
+                    sub_parser.macros = self.macros.copy()
+                    # Expect STRUCTURE keyword and parse members
+                    sub_parser._expect(TokenType.STRUCTURE, "Expected STRUCTURE in macro expansion")
+                    struct_members = sub_parser._parse_structure_type()
         # Type might be implied for BASED variables
 
         # Parse attributes
@@ -939,13 +990,48 @@ class Parser:
         return None
 
     def _parse_structure_type(self) -> list[StructMember]:
-        """Parse STRUCTURE type definition."""
+        """Parse STRUCTURE type definition.
+
+        Handles PL/M-80 macro expansion where macros can expand to
+        lists of structure member definitions (e.g., cqueue, queueheader).
+        """
         self._expect(TokenType.LPAREN, "Expected '(' after STRUCTURE")
         members: list[StructMember] = []
 
         while True:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected member name")
             name = name_tok.value
+
+            # Check if this identifier is a macro that expands to member definitions
+            # (not just a single type like BYTE or ADDRESS)
+            normalized_name = name.upper().replace("$", "")
+            if normalized_name in self.macros:
+                # Check what follows - if not BYTE/ADDRESS/(dimension, this is a macro member list
+                if not (self._check(TokenType.BYTE) or self._check(TokenType.ADDRESS) or
+                        self._check(TokenType.LPAREN)):
+                    # This identifier is a macro expanding to member definitions
+                    expansion = self._expand_macro(self.macros[normalized_name])
+                    expansion = expansion.strip()
+                    if expansion.startswith("'") and expansion.endswith("'"):
+                        expansion = expansion[1:-1]
+
+                    # Parse the expanded members using a sub-parser
+                    # Wrap in STRUCTURE() so we can reuse parse logic
+                    struct_source = f"STRUCTURE ({expansion})"
+                    from .lexer import Lexer
+                    sub_lexer = Lexer(struct_source, f"<macro:{name}>")
+                    sub_tokens = sub_lexer.tokenize()
+                    sub_parser = Parser(sub_tokens, f"<macro:{name}>")
+                    sub_parser.macros = self.macros.copy()
+
+                    sub_parser._expect(TokenType.STRUCTURE, "Expected STRUCTURE")
+                    expanded_members = sub_parser._parse_structure_type()
+                    members.extend(expanded_members)
+
+                    # Continue parsing - there might be more members after the macro
+                    if not self._match(TokenType.COMMA):
+                        break
+                    continue
 
             dimension: int | None = None
             if self._match(TokenType.LPAREN):
@@ -956,6 +1042,22 @@ class Parser:
                 dtype = DataType.BYTE
             elif self._match(TokenType.ADDRESS):
                 dtype = DataType.ADDRESS
+            elif self._check(TokenType.IDENTIFIER):
+                # Check if this is a type macro (e.g., ADDR -> ADDRESS)
+                type_macro = self.current.value.upper().replace("$", "")
+                if type_macro in self.macros:
+                    expansion = self._expand_macro(self.macros[type_macro])
+                    expansion = expansion.strip().strip("'").upper()
+                    if expansion == "BYTE":
+                        self._advance()
+                        dtype = DataType.BYTE
+                    elif expansion == "ADDRESS":
+                        self._advance()
+                        dtype = DataType.ADDRESS
+                    else:
+                        raise self._error("Expected BYTE or ADDRESS in structure member")
+                else:
+                    raise self._error("Expected BYTE or ADDRESS in structure member")
             else:
                 raise self._error("Expected BYTE or ADDRESS in structure member")
 
@@ -1027,6 +1129,15 @@ class Parser:
         """Parse a procedure declaration."""
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected procedure name")
         name = name_tok.value
+
+        # Check if the procedure name is a LITERALLY macro and expand it
+        # This handles patterns like: DECLARE MON3 LITERALLY 'MON2A'; MON3: PROCEDURE...
+        if name in self.macros:
+            expanded = self._expand_macro(self.macros[name]).strip().strip("'")
+            # Use expanded name if it's a simple identifier
+            if expanded.replace("$", "").replace("_", "").isalnum():
+                name = expanded
+
         self._expect(TokenType.COLON, "Expected ':' after procedure name")
         # Accept PROCEDURE keyword or identifier that expands to 'PROCEDURE' via LITERALLY
         if not self._match(TokenType.PROCEDURE):
@@ -1048,12 +1159,24 @@ class Parser:
                     )
             self._expect(TokenType.RPAREN, "Expected ')' after parameters")
 
-        # Parse return type
+        # Parse return type (handles type macros like BOOLEAN -> BYTE)
         return_type: DataType | None = None
         if self._match(TokenType.BYTE):
             return_type = DataType.BYTE
         elif self._match(TokenType.ADDRESS):
             return_type = DataType.ADDRESS
+        elif self._check(TokenType.IDENTIFIER):
+            # Check if this is a type macro (e.g., BOOLEAN -> BYTE)
+            type_name = self.current.value.upper().replace("$", "")
+            if type_name in self.macros:
+                expansion = self._expand_macro(self.macros[type_name])
+                expansion = expansion.strip().strip("'").upper()
+                if expansion == "BYTE":
+                    self._advance()
+                    return_type = DataType.BYTE
+                elif expansion == "ADDRESS":
+                    self._advance()
+                    return_type = DataType.ADDRESS
 
         # Parse attributes
         is_public = False
@@ -1080,7 +1203,7 @@ class Parser:
         stmts: list[Stmt] = []
 
         # Parse declarations (allowed even for EXTERNAL to declare parameter types)
-        while self._check(TokenType.DECLARE):
+        while self._check_declare():
             decls.extend(self._parse_declare())
 
         if not is_external:
@@ -1092,6 +1215,11 @@ class Parser:
         self._expect(TokenType.END, "Expected END")
         if self._match(TokenType.IDENTIFIER):
             end_name = self._peek(-1).value
+            # Expand LITERALLY macro for end name comparison
+            if end_name in self.macros:
+                expanded = self._expand_macro(self.macros[end_name]).strip().strip("'")
+                if expanded.replace("$", "").replace("_", "").isalnum():
+                    end_name = expanded
             if end_name != name:
                 # Warning: end label doesn't match
                 pass
@@ -1139,7 +1267,7 @@ class Parser:
                 self._expect(TokenType.SEMICOLON, "Expected ';' after module DO")
 
                 # Parse module body
-                while self._check(TokenType.DECLARE):
+                while self._check_declare():
                     decls.extend(self._parse_declare())
 
                 while (
@@ -1165,7 +1293,7 @@ class Parser:
                 decls.append(proc)
                 # Continue parsing the rest of the file
                 while not self._check(TokenType.EOF) and not self._check(TokenType.EOF_KW):
-                    if self._check(TokenType.DECLARE):
+                    if self._check_declare():
                         decls.extend(self._parse_declare())
                     else:
                         stmt = self._parse_statement()
@@ -1176,7 +1304,7 @@ class Parser:
             else:
                 # Not a DO block and not a procedure - parse as implicit module
                 while not self._check(TokenType.EOF) and not self._check(TokenType.EOF_KW):
-                    if self._check(TokenType.DECLARE):
+                    if self._check_declare():
                         decls.extend(self._parse_declare())
                     else:
                         stmt = self._parse_statement()
@@ -1187,7 +1315,7 @@ class Parser:
         else:
             # Parse declarations and statements directly
             while not self._check(TokenType.EOF) and not self._check(TokenType.EOF_KW):
-                if self._check(TokenType.DECLARE):
+                if self._check_declare():
                     decls.extend(self._parse_declare())
                 else:
                     stmt = self._parse_statement()

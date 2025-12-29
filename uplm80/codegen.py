@@ -951,6 +951,11 @@ class CodeGenerator:
         # Emit runtime library if needed
         if self.needs_runtime:
             self._emit()
+            # Guard against fallthrough from peephole optimization.
+            # The optimizer may convert 'call ??move; ret' to 'jp ??move'
+            # then eliminate the jp since ??move immediately follows.
+            # This guard ensures we never fall through into runtime code.
+            self._emit("jp", "??RTEND")
             self._emit(comment="Runtime library")
             runtime = get_runtime_library(self.needs_runtime)
             for line in runtime.split("\n"):
@@ -969,6 +974,8 @@ class CodeGenerator:
                             self._emit(parts[0], parts[1])
                         else:
                             self._emit(parts[0])
+            # End of runtime library label
+            self._emit_label("??RTEND")
 
         # Emit string literals
         if self.string_literals:
@@ -1002,11 +1009,11 @@ class CodeGenerator:
         # Note: For CPM mode, stack is provided by CP/M (set from BDOS address at 0006H).
         # For BARE mode, stack storage (??STACK) is emitted above.
 
-        # Emit EXTRN for __END__ if program uses .MEMORY built-in
-        # __END__ is provided by the linker as the first free byte after all code/data
+        # Define __END__ label if program uses .MEMORY built-in
+        # __END__ marks the first free byte after all code/data
         if self.needs_end_symbol:
             self._emit()
-            self._emit("extrn", "__END__")
+            self._emit_label("__END__")
 
         # End directive
         self._emit()
@@ -1134,6 +1141,8 @@ class CodeGenerator:
         # Emit runtime library if needed
         if self.needs_runtime:
             self._emit()
+            # Guard against fallthrough from peephole optimization
+            self._emit("jp", "??RTEND")
             self._emit(comment="Runtime library")
             runtime = get_runtime_library(self.needs_runtime)
             for line in runtime.split("\n"):
@@ -1149,6 +1158,8 @@ class CodeGenerator:
                             self._emit(parts[0], parts[1])
                         else:
                             self._emit(parts[0])
+            # End of runtime library label
+            self._emit_label("??RTEND")
 
         # Emit string literals
         if self.string_literals:
@@ -1179,11 +1190,11 @@ class CodeGenerator:
             self._emit("ds", "64")
             self._emit_label("??STACK")
 
-        # Emit EXTRN for __END__ if program uses .MEMORY built-in
-        # __END__ is provided by the linker as the first free byte after all code/data
+        # Define __END__ label if program uses .MEMORY built-in
+        # __END__ marks the first free byte after all code/data
         if self.needs_end_symbol:
             self._emit()
-            self._emit("extrn", "__END__")
+            self._emit_label("__END__")
 
         # End directive
         self._emit()
@@ -1370,11 +1381,13 @@ class CodeGenerator:
                 # AT location is an address expression
                 loc_operand = decl.at_location.operand
                 if isinstance(loc_operand, Identifier):
-                    # Check for built-in MEMORY - address is __END__ (linker symbol)
+                    # Check for built-in MEMORY - address is __END__ (end of program)
                     if loc_operand.name.upper() == "MEMORY":
                         self.needs_end_symbol = True
+                        # Use SET instead of EQU to allow forward reference to __END__
+                        # __END__ is defined at the end of the file, so this is a forward ref
                         self.data_segment.append(
-                            AsmLine(label=asm_name, opcode="EQU", operands="__END__")
+                            AsmLine(label=asm_name, opcode="SET", operands="__END__")
                         )
                     else:
                         # Reference to another variable - check if external
@@ -1386,8 +1399,10 @@ class CodeGenerator:
                             # No EQU needed - we'll reference the external directly
                         else:
                             ref_name = ref_sym.asm_name if ref_sym and ref_sym.asm_name else self._mangle_name(loc_operand.name)
+                            # Use SET instead of EQU to allow forward references
+                            # The referenced symbol may be declared later in the file
                             self.data_segment.append(
-                                AsmLine(label=asm_name, opcode="EQU", operands=ref_name)
+                                AsmLine(label=asm_name, opcode="SET", operands=ref_name)
                             )
                 else:
                     # Complex AT expression - evaluate at assembly time (fallback)
@@ -1464,8 +1479,23 @@ class CodeGenerator:
                 operand = val.operand
                 if isinstance(operand, Identifier):
                     # .name means address of name
+                    # Look up the symbol to get its scoped asm_name
+                    name = operand.name
+                    sym = None
+                    # Search in current scope hierarchy
+                    if self.current_proc:
+                        parts = self.current_proc.split('$')
+                        for i in range(len(parts), 0, -1):
+                            scoped_name = '$'.join(parts[:i]) + '$' + name
+                            sym = self.symbols.lookup(scoped_name)
+                            if sym:
+                                break
+                    if sym is None:
+                        sym = self.symbols.lookup(name)
+                    # Use scoped asm_name if available
+                    asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
                     target.append(
-                        AsmLine(opcode="dw", operands=operand.name)
+                        AsmLine(opcode="dw", operands=asm_name)
                     )
                 else:
                     raise CodeGenError(f"Unsupported operand in DATA location expression: {operand}")
@@ -1486,9 +1516,21 @@ class CodeGenerator:
         if isinstance(expr, NumberLiteral):
             return self._format_number(expr.value)
         elif isinstance(expr, Identifier):
-            if expr.name in self.literal_macros:
-                return self.literal_macros[expr.name]
-            return expr.name
+            name = expr.name
+            if name in self.literal_macros:
+                return self.literal_macros[name]
+            # Look up the symbol to get its scoped asm_name
+            sym = None
+            if self.current_proc:
+                parts = self.current_proc.split('$')
+                for i in range(len(parts), 0, -1):
+                    scoped_name = '$'.join(parts[:i]) + '$' + name
+                    sym = self.symbols.lookup(scoped_name)
+                    if sym:
+                        break
+            if sym is None:
+                sym = self.symbols.lookup(name)
+            return sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
         elif isinstance(expr, LocationExpr):
             return self._data_expr_to_string(expr.operand)
         elif isinstance(expr, BinaryExpr):
@@ -1898,20 +1940,40 @@ class CodeGenerator:
 
     def _gen_call_stmt(self, stmt: CallStmt) -> None:
         """Generate code for a CALL statement."""
-        # Check for built-in procedures first
-        if isinstance(stmt.callee, Identifier):
-            name = stmt.callee.name.upper()
-            # Handle built-in procedures that don't return values
-            if name in self.BUILTIN_FUNCS:
-                result = self._gen_builtin(name, stmt.args)
-                if result is not None or name in ('TIME', 'MOVE'):
-                    # Built-in was handled
-                    return
-
-        # Look up procedure symbol to check if reentrant
+        # Look up procedure symbol to check if it's user-defined
         sym = None
         call_name = None
         if isinstance(stmt.callee, Identifier):
+            name = stmt.callee.name
+            # Check if user defined a procedure with this name
+            if self.current_proc:
+                parts = self.current_proc.split('$')
+                for i in range(len(parts), 0, -1):
+                    scoped_name = '$'.join(parts[:i]) + '$' + name
+                    sym = self.symbols.lookup(scoped_name)
+                    if sym:
+                        break
+            if sym is None:
+                sym = self.symbols.lookup(name)
+            # Set call_name early if we found the symbol
+            if sym:
+                call_name = sym.asm_name if sym.asm_name else name
+
+        # Treat as builtin if it's a BUILTIN symbol (not user-defined)
+        # Builtins are registered in symbol table with SymbolKind.BUILTIN
+        if isinstance(stmt.callee, Identifier):
+            is_builtin = (sym is None or sym.kind == SymbolKind.BUILTIN)
+            if is_builtin:
+                upper_name = stmt.callee.name.upper()
+                # Handle built-in procedures that don't return values
+                if upper_name in self.BUILTIN_FUNCS:
+                    result = self._gen_builtin(upper_name, stmt.args)
+                    if result is not None or upper_name in ('TIME', 'MOVE'):
+                        # Built-in was handled
+                        return
+
+        # If sym/call_name weren't set yet, look up again (for member access etc.)
+        if isinstance(stmt.callee, Identifier) and call_name is None:
             name = stmt.callee.name
             if self.current_proc:
                 parts = self.current_proc.split('$')
@@ -2912,7 +2974,7 @@ class CodeGenerator:
             self._emit_label(test_label)
             self._gen_load(stmt.index_var)  # A = index
             self._emit("cp", self._format_number(bound_val + 1))  # Compare with bound+1
-            self._emit("jr", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
+            self._emit("jp", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -2956,7 +3018,7 @@ class CodeGenerator:
             self._gen_load(stmt.index_var)  # A = index
             # cp b computes a - b (index - (bound+1)), sets C if index < bound+1
             self._emit("cp", "B")  # Compare index with bound+1
-            self._emit("jr", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
+            self._emit("jp", f"C,{loop_label}")  # Continue if index < bound+1 (i.e., index <= bound)
 
             self._emit_label(end_label)
             self.loop_stack.pop()
@@ -3432,13 +3494,59 @@ class CodeGenerator:
         """Load a variable value into A/HL. Returns the type."""
         if isinstance(expr, Identifier):
             name = expr.name
+            upper_name = name.upper()
 
             # Handle built-in STACKPTR variable
-            if name == "STACKPTR":
+            if upper_name == "STACKPTR":
                 # Read stack pointer into HL
                 self._emit("ld", "hl,0")
                 self._emit("add", "hl,sp")  # HL = HL + SP = SP
                 return DataType.ADDRESS
+
+            # Handle flag-testing builtins (can be used without parentheses)
+            if upper_name == "CARRY":
+                # Return carry flag value
+                self._emit("ld", "a,0")
+                self._emit("rla")  # Rotate carry into A
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+                return DataType.BYTE
+
+            if upper_name == "ZERO":
+                # Return zero flag value
+                true_label = self._new_label("ZF")
+                end_label = self._new_label("ZFE")
+                self._emit("jp", f"z,{true_label}")
+                self._emit("ld", "hl,0")
+                self._emit("jp", end_label)
+                self._emit_label(true_label)
+                self._emit("ld", "hl,0ffh")
+                self._emit_label(end_label)
+                return DataType.BYTE
+
+            if upper_name == "SIGN":
+                # Return sign flag value
+                true_label = self._new_label("SF")
+                end_label = self._new_label("SFE")
+                self._emit("jp", f"m,{true_label}")
+                self._emit("ld", "hl,0")
+                self._emit("jp", end_label)
+                self._emit_label(true_label)
+                self._emit("ld", "hl,0ffh")
+                self._emit_label(end_label)
+                return DataType.BYTE
+
+            if upper_name == "PARITY":
+                # Return parity flag value
+                true_label = self._new_label("PF")
+                end_label = self._new_label("PFE")
+                self._emit("jp", f"pe,{true_label}")
+                self._emit("ld", "hl,0")
+                self._emit("jp", end_label)
+                self._emit_label(true_label)
+                self._emit("ld", "hl,0ffh")
+                self._emit_label(end_label)
+                return DataType.BYTE
 
             # Check for LITERALLY macro - expand recursively
             if name in self.literal_macros:
@@ -5141,13 +5249,30 @@ class CodeGenerator:
             return DataType.BYTE
 
         if name == "MOVE":
-            # MOVE(count, source, dest)
-            self.needs_runtime.add("move")
-            for arg in args:
-                self._gen_expr(arg)
-                self._emit("push", "hl")
-            self._emit("call", "??move")
-            # Clean up - MOVE does its own stack cleanup
+            # MOVE(count, source, dest) - use Z80 LDIR for efficiency
+            # Generate inline code to avoid calling convention issues
+            # LDIR: (DE) <- (HL), HL++, DE++, BC-- until BC=0
+            # PL/M MOVE order: count, source, dest
+
+            # First, evaluate and save all args
+            # count -> BC, source -> HL, dest -> DE
+            self._gen_expr(args[2])  # dest -> HL
+            self._emit("push", "hl")
+            self._gen_expr(args[1])  # source -> HL
+            self._emit("push", "hl")
+            self._gen_expr(args[0])  # count -> HL
+            # Move count from HL to BC using push/pop to avoid peephole issues
+            self._emit("push", "hl")
+            self._emit("pop", "bc")
+            self._emit("pop", "hl")  # source -> HL
+            self._emit("pop", "de")  # dest -> DE
+            # Check if count is 0
+            self._emit("ld", "a,b")
+            self._emit("or", "c")
+            skip_label = self._new_label("MOVEX")
+            self._emit("jr", f"z,{skip_label}")
+            self._emit("ldir")
+            self._emit_label(skip_label)
             return None
 
         if name == "TIME":
@@ -5309,6 +5434,12 @@ class CodeGenerator:
                 if sym.stack_offset != 0:
                     self._emit("ld", f"de,{sym.stack_offset}")
                     self._emit("add", "hl,de")
+            elif sym and sym.based_on:
+                # BASED variable - its "address" is the value of the base pointer
+                # e.g., if fcbv BASED fcbp, then .fcbv returns the value of fcbp
+                base_sym = self.symbols.lookup(sym.based_on)
+                base_asm_name = base_sym.asm_name if base_sym and base_sym.asm_name else self._mangle_name(sym.based_on)
+                self._emit("ld", f"hl,({base_asm_name})")
             else:
                 asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
                 self._emit("ld", f"hl,{asm_name}")
