@@ -39,13 +39,29 @@ class Compiler:
         opt_level: int = 2,
         debug: bool = False,
         defines: list[str] | None = None,
+        include_paths: list[str] | None = None,
     ) -> None:
         self.target = target
         self.mode = mode
         self.opt_level = opt_level
         self.debug = debug
         self.defines = defines or []  # Symbols to define for conditional compilation
+        self.include_paths = include_paths or []  # Include search paths
         self.errors = ErrorCollector()
+
+    def _clean_cpm_source(self, source: str) -> str:
+        """Clean CP/M source files with high-bit characters.
+
+        CP/M editors sometimes set the high bit (0x80) on characters for
+        word-wrap hints or other metadata. Strip the high bit to recover
+        the original ASCII character.
+
+        This also fixes decorative banners like ' /ª...*/':
+        - 'ª' (0xAA) becomes '*' (0x2A) when high bit is stripped
+        - So ' /ª.../*' becomes ' /*...*/' - a valid comment
+        """
+        # Strip high bit from all characters
+        return ''.join(chr(ord(c) & 0x7F) for c in source)
 
     def compile(self, source: str, filename: str = "<input>") -> str | None:
         """
@@ -58,7 +74,7 @@ class Compiler:
             if self.debug:
                 print(f"[DEBUG] Phase 1: Lexing {filename}", file=sys.stderr)
 
-            lexer = Lexer(source, filename)
+            lexer = Lexer(source, filename, include_paths=self.include_paths)
 
             # Set command-line defined symbols
             for symbol in self.defines:
@@ -134,9 +150,14 @@ class Compiler:
 
         Returns True on success, False on failure.
         """
-        # Read source file
+        # Read source file (CP/M files may have high-bit characters)
         try:
-            source = input_path.read_text()
+            try:
+                source = input_path.read_text(encoding='utf-8')
+            except UnicodeDecodeError:
+                source = input_path.read_text(encoding='latin-1')
+            # Handle CP/M decorative banners and high-bit characters
+            source = self._clean_cpm_source(source)
         except OSError as e:
             print(f"Error reading {input_path}: {e}", file=sys.stderr)
             return False
@@ -181,7 +202,12 @@ class Compiler:
             # Phase 1 & 2: Lex and parse all files
             for input_path in input_paths:
                 try:
-                    source = input_path.read_text()
+                    try:
+                        source = input_path.read_text(encoding='utf-8')
+                    except UnicodeDecodeError:
+                        source = input_path.read_text(encoding='latin-1')
+                    # Handle CP/M decorative banners and high-bit characters
+                    source = self._clean_cpm_source(source)
                 except OSError as e:
                     print(f"Error reading {input_path}: {e}", file=sys.stderr)
                     return False
@@ -192,7 +218,7 @@ class Compiler:
                 if self.debug:
                     print(f"[DEBUG] Phase 1: Lexing {filename}", file=sys.stderr)
 
-                lexer = Lexer(source, filename)
+                lexer = Lexer(source, filename, include_paths=self.include_paths)
                 for symbol in self.defines:
                     lexer.define_symbol(symbol)
                 tokens = lexer.tokenize()
@@ -308,6 +334,15 @@ def main() -> None:
         help="Define conditional compilation symbol (can be repeated)",
     )
 
+    parser.add_argument(
+        "-I", "--include",
+        action="append",
+        dest="include_paths",
+        default=[],
+        metavar="PATH",
+        help="Add include search path (can be repeated)",
+    )
+
     args = parser.parse_args()
 
     # Select mode
@@ -320,6 +355,7 @@ def main() -> None:
         opt_level=args.optimize,
         debug=args.debug,
         defines=args.defines,
+        include_paths=args.include_paths,
     )
 
     # Compile (supports multiple input files)

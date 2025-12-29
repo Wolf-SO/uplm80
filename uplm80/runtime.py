@@ -214,6 +214,11 @@ def get_runtime_library(needed: set[str] | None = None) -> str:
         "subde": RUNTIME_SUBDE,
     }
 
+    # Dependencies: some routines call others
+    dependencies = {
+        "mod16": {"div16"},  # mod16 calls div16
+    }
+
     parts = ["; PL/M-80 Runtime Library", ""]
 
     if needed is None:
@@ -221,9 +226,15 @@ def get_runtime_library(needed: set[str] | None = None) -> str:
         for code in routines.values():
             parts.append(code)
     else:
-        # Include only what's needed
+        # Expand dependencies
+        expanded = set(needed)
+        for name in list(needed):
+            if name in dependencies:
+                expanded.update(dependencies[name])
+
+        # Include only what's needed (in consistent order)
         for name, code in routines.items():
-            if name in needed:
+            if name in expanded:
                 parts.append(code)
 
     return "\n".join(parts)

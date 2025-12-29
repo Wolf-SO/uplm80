@@ -13,13 +13,21 @@ from .errors import LexerError, SourceLocation
 class Lexer:
     """Tokenizer for PL/M-80 source code."""
 
-    def __init__(self, source: str, filename: str = "<input>") -> None:
+    def __init__(self, source: str, filename: str = "<input>",
+                 include_paths: list[str] | None = None) -> None:
         self.source = source
         self.filename = filename
         self.pos = 0  # Current position in source
         self.line = 1  # Current line number (1-based)
         self.column = 1  # Current column (1-based)
         self.line_start = 0  # Position of start of current line
+
+        # Include path handling
+        self.include_paths = include_paths or []
+        # Add directory of current file to include paths
+        import os
+        if filename and filename != "<input>":
+            self.include_paths.insert(0, os.path.dirname(os.path.abspath(filename)))
 
         # Conditional compilation state
         self._cond_symbols: set[str] = set()  # Defined symbols
@@ -218,7 +226,55 @@ class Lexer:
             self._cond_enabled = True
             return
 
-        # Other directives ($TITLE, $INCLUDE, etc.) are just skipped
+        # $INCLUDE(filename) - include another file
+        match = re.match(r'\$INCLUDE\s*\(([^)]+)\)', line, re.IGNORECASE)
+        if match:
+            include_name = match.group(1).strip()
+            # Remove quotes if present
+            if (include_name.startswith("'") and include_name.endswith("'")) or \
+               (include_name.startswith('"') and include_name.endswith('"')):
+                include_name = include_name[1:-1]
+
+            # Find the file in include paths
+            import os
+            include_content = None
+            for path in self.include_paths:
+                # Try with .LIT extension if not specified
+                candidates = [
+                    os.path.join(path, include_name),
+                    os.path.join(path, include_name.upper()),
+                    os.path.join(path, include_name.lower()),
+                ]
+                if not include_name.upper().endswith('.LIT'):
+                    candidates.extend([
+                        os.path.join(path, include_name + '.lit'),
+                        os.path.join(path, include_name + '.LIT'),
+                    ])
+                for candidate in candidates:
+                    if os.path.exists(candidate):
+                        try:
+                            with open(candidate, 'r', encoding='utf-8') as f:
+                                include_content = f.read()
+                        except UnicodeDecodeError:
+                            with open(candidate, 'r', encoding='latin-1') as f:
+                                include_content = f.read()
+                        # Strip high bit from characters (CP/M word-wrap hints)
+                        include_content = ''.join(chr(ord(c) & 0x7F) for c in include_content)
+                        break
+                if include_content is not None:
+                    break
+
+            if include_content is not None:
+                # Insert the included content after current position
+                # We do this by modifying self.source
+                self.source = (
+                    self.source[:self.pos] +
+                    "\n" + include_content + "\n" +
+                    self.source[self.pos:]
+                )
+            return
+
+        # Other directives ($TITLE, $NOLIST, etc.) are just skipped
 
     def _make_token(
         self, token_type: TokenType, value: object, lexeme: str, start_line: int, start_col: int
@@ -296,7 +352,12 @@ class Lexer:
         return self._make_token(TokenType.NUMBER, value, lexeme, start_line, start_col)
 
     def _scan_string(self) -> Token:
-        """Scan a string literal."""
+        """Scan a string literal.
+
+        PL/M-80 allows multi-line strings, especially for LITERALLY declarations.
+        Whitespace (including newlines) within multi-line strings is preserved
+        but typically normalized when the LITERALLY macro is expanded.
+        """
         start_line = self.line
         start_col = self.column
         start_pos = self.pos
@@ -306,11 +367,16 @@ class Lexer:
         chars: list[str] = []
         while True:
             ch = self._peek()
-            if ch == "\0" or ch == "\n":
+            if ch == "\0":
                 raise LexerError(
                     "Unterminated string literal",
                     SourceLocation(start_line, start_col, self.filename),
                 )
+            if ch == "\n":
+                # Multi-line string: include whitespace, advance line counter
+                chars.append(ch)
+                self._advance()
+                continue
             if ch == "'":
                 self._advance()
                 # Check for escaped quote ''

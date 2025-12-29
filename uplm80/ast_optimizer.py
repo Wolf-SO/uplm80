@@ -318,19 +318,30 @@ class ASTOptimizer:
         return False
 
     def _eliminate_unreachable(self, stmts: list[Stmt]) -> list[Stmt]:
-        """Remove statements after terminators (RETURN, GOTO, HALT)."""
+        """Remove statements after terminators (RETURN, GOTO, HALT).
+
+        Preserves labeled statements after terminators since they can be
+        reached via GOTO from elsewhere in the code.
+        """
         if self.opt_level < 2:
             return stmts
 
         result: list[Stmt] = []
+        in_unreachable = False
         for stmt in stmts:
-            result.append(stmt)
-            if self._is_terminator(stmt):
-                # Count eliminated statements
-                remaining = len(stmts) - len(result)
-                if remaining > 0:
-                    self.stats.dead_code_eliminated += remaining
-                break
+            if in_unreachable:
+                # Check if this statement has a label (reachable via GOTO)
+                if isinstance(stmt, LabeledStmt):
+                    # Labeled statement is reachable, resume including statements
+                    in_unreachable = False
+                    result.append(stmt)
+                else:
+                    # Truly unreachable statement
+                    self.stats.dead_code_eliminated += 1
+            else:
+                result.append(stmt)
+                if self._is_terminator(stmt):
+                    in_unreachable = True
         return result
 
     def _eliminate_dead_stores(self, stmts: list[Stmt]) -> list[Stmt]:
