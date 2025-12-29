@@ -33,7 +33,7 @@ Compiled output is comparable to the original Digital Research PL/M-80 compiler:
 Quick install from PyPI:
 
 ```bash
-pip install uplm80 um80 upeep80
+pip install uplm80 um80 upeepz80
 ```
 
 **Platform-specific guides:**

@@ -13,7 +13,7 @@ The easiest way to install uplm80 and the complete toolchain:
 
 ```bash
 # Install from PyPI
-pip install uplm80 um80 upeep80
+pip install uplm80 um80 upeepz80
 
 # Verify installation
 uplm80 --version
@@ -38,7 +38,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -e .
 
 # Install associated tools
-pip install um80 upeep80
+pip install um80 upeepz80
 
 # Verify installation
 uplm80 --version
@@ -56,7 +56,7 @@ source bin/activate  # On Windows: Scripts\activate
 
 # Install all tools
 pip install --upgrade pip
-pip install uplm80 um80 upeep80
+pip install uplm80 um80 upeepz80
 
 # Verify installation
 uplm80 --version
@@ -102,7 +102,7 @@ Features:
 - Sets program origin
 - Generates symbol files
 
-### 4. upeep80 (Peephole Optimizer Library)
+### 4. upeepz80 (Peephole Optimizer Library)
 Automatically installed as a dependency of uplm80.
 
 Features:
@@ -317,7 +317,7 @@ To update to the latest version:
 
 ```bash
 # From PyPI
-pip install --upgrade uplm80 um80 upeep80
+pip install --upgrade uplm80 um80 upeepz80
 
 # From source (in repository directory)
 git pull
@@ -327,7 +327,7 @@ pip install --upgrade -e .
 ## Uninstalling
 
 ```bash
-pip uninstall uplm80 um80 upeep80
+pip uninstall uplm80 um80 upeepz80
 ```
 
 ## Getting Help

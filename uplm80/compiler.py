@@ -16,8 +16,8 @@ from .errors import CompilerError, ErrorCollector
 
 # Import AST optimizer (PL/M-80 specific)
 from .ast_optimizer import ASTOptimizer
-# Import peephole optimizer from upeep80 library (Z80 in/out)
-from upeep80 import PeepholeOptimizer
+# Import peephole optimizer from upeepz80 library
+from upeepz80 import PeepholeOptimizer
 
 
 class Compiler:

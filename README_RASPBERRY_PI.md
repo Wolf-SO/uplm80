@@ -36,7 +36,7 @@ cd myuplm80/
 source bin/activate
 
 # Install uplm80 and associated tools
-pip install uplm80 um80 upeep80
+pip install uplm80 um80 upeepz80
 ```
 
 ### Option 2: Install from Source
@@ -54,7 +54,7 @@ source venv/bin/activate
 pip install -e .
 
 # Install associated tools
-pip install um80 upeep80
+pip install um80 upeepz80
 ```
 
 ## Installing the CP/M Emulator (Optional but Recommended)
@@ -217,7 +217,7 @@ Common options:
 - **uplm80** - PL/M-80 compiler (PL/M source → assembly)
 - **um80** - Universal Macro Assembler (assembly → relocatable object)
 - **ul80** - Universal Linker (object files → CP/M executable)
-- **upeep80** - Peephole optimizer library (used internally by uplm80)
+- **upeepz80** - Peephole optimizer library (used internally by uplm80)
 - **cpmemu** - CP/M 2.2 emulator (runs CP/M programs on Linux/Raspberry Pi)
 
 ## Additional Resources
