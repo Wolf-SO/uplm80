@@ -1,0 +1,22 @@
+/* Test case for array assignment register clobbering bug */
+/* fcb(1+i) = get$buf$byte(4+i) */
+/* The bug: when evaluating 1+i for the array index, the compiler */
+/* uses register B which clobbers the saved return value from the call */
+
+test$module: do;
+
+declare fcb(36) byte;
+declare i byte;
+
+get$buf$byte: procedure(offset) byte external;
+    declare offset address;
+end get$buf$byte;
+
+/* This triggers the bug - assigning function result to array with computed index */
+buggy$proc: procedure;
+    do i = 0 to 7;
+        fcb(1+i) = get$buf$byte(4+i);
+    end;
+end buggy$proc;
+
+end test$module;
