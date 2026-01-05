@@ -4018,11 +4018,13 @@ class CodeGenerator:
                 else:
                     # Variable offset - compute __END__ + offset, then store
                     if val_type == DataType.BYTE:
-                        self._emit("ld", "b,a")  # Save value in B
+                        # Save value on stack - cannot use B as _gen_expr may clobber it
+                        self._emit("push", "af")  # Save value on stack
                         self._gen_expr(addr_arg)  # HL = offset
                         self._emit("ld", "de,__END__")
                         self._emit("add", "hl,de")  # HL = __END__ + offset
-                        self._emit("ld", "(hl),b")  # Store value at (HL)
+                        self._emit("pop", "af")  # Restore value to A
+                        self._emit("ld", "(hl),a")  # Store value at (HL)
                     else:
                         self._emit("push", "hl")  # Save value
                         self._gen_expr(addr_arg)  # HL = offset
@@ -4092,10 +4094,13 @@ class CodeGenerator:
                             # BYTE array - store single byte
                             if val_type != DataType.BYTE:
                                 self._emit("ld", "a,l")  # Get low byte from ADDRESS
-                            # Value in A - save it, compute address, store
-                            self._emit("ld", "b,a")  # Save value in B
+                            # Value in A - save it on stack, compute address, store
+                            # NOTE: Cannot use B register here because _gen_subscript_addr
+                            # may call _gen_byte_binary which uses B for its calculations
+                            self._emit("push", "af")  # Save value on stack
                             self._gen_subscript_addr(subscript)  # HL = address
-                            self._emit("ld", "(hl),b")  # Store value
+                            self._emit("pop", "af")  # Restore value to A
+                            self._emit("ld", "(hl),a")  # Store value
                     return
 
             # Unknown call target - fall through to complex store
