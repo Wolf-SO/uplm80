@@ -1,0 +1,235 @@
+/*
+ * TEST: REENTRANT PROCEDURES (Bug 863755b regression test)
+ *
+ * Tests reentrant procedure support with IX frame pointer:
+ * - Parameters accessed via IX+offset instead of static memory
+ * - Local variables allocated on stack at negative IX offsets
+ * - Address-of operator (.var) computes IX+offset for stack variables
+ * - Return statement zero-extends BYTE to HL for ADDRESS return type
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_reentrant.plm -o tests/build/test_reentrant.mac
+ *   um80 tests/build/test_reentrant.mac -o tests/build/test_reentrant.rel
+ *   ul80 -o tests/build/test_reentrant.com tests/build/test_reentrant.rel
+ *   cpmemu tests/build/test_reentrant.com
+ */
+
+0100H:
+
+TEST$REENTRANT:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * REENTRANT PROCEDURES FOR TESTING
+ * ================================================================ */
+
+/* Simple reentrant procedure with parameters and locals */
+ADD$REENTRANT: PROCEDURE(A, B) BYTE REENTRANT;
+    DECLARE (A, B) BYTE;
+    DECLARE RESULT BYTE;
+    RESULT = A + B;
+    RETURN RESULT;
+END ADD$REENTRANT;
+
+/* Reentrant procedure returning ADDRESS */
+ADD$ADDR$REENTRANT: PROCEDURE(A, B) ADDRESS REENTRANT;
+    DECLARE (A, B) ADDRESS;
+    DECLARE RESULT ADDRESS;
+    RESULT = A + B;
+    RETURN RESULT;
+END ADD$ADDR$REENTRANT;
+
+/* Global counter for recursion tracking */
+DECLARE CALL$COUNT ADDRESS;
+
+/* Recursive factorial function (uses reentrant mechanics) */
+FACTORIAL: PROCEDURE(N) ADDRESS REENTRANT;
+    DECLARE N BYTE;
+    DECLARE RESULT ADDRESS;
+
+    CALL$COUNT = CALL$COUNT + 1;
+
+    IF N <= 1 THEN
+        RETURN 1;
+
+    RESULT = N * FACTORIAL(N - 1);
+    RETURN RESULT;
+END FACTORIAL;
+
+/* Recursive Fibonacci */
+FIBONACCI: PROCEDURE(N) ADDRESS REENTRANT;
+    DECLARE N BYTE;
+
+    IF N <= 1 THEN
+        RETURN N;
+
+    RETURN FIBONACCI(N - 1) + FIBONACCI(N - 2);
+END FIBONACCI;
+
+/* Reentrant procedure with multiple locals */
+COMPUTE$REENTRANT: PROCEDURE(X, Y) ADDRESS REENTRANT;
+    DECLARE (X, Y) BYTE;
+    DECLARE LOCAL1 ADDRESS;
+    DECLARE LOCAL2 ADDRESS;
+    DECLARE LOCAL3 BYTE;
+
+    LOCAL1 = X * 10;
+    LOCAL2 = Y * 20;
+    LOCAL3 = X + Y;
+
+    RETURN LOCAL1 + LOCAL2 + LOCAL3;
+END COMPUTE$REENTRANT;
+
+/* ================================================================
+ * TESTS
+ * ================================================================ */
+
+TEST$SIMPLE$REENTRANT: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Test simple byte addition */
+    RESULT = ADD$REENTRANT(10, 20);
+    CALL PRINT$TEST(.'add_re $', RESULT);        /* Expected: 30 */
+
+    RESULT = ADD$REENTRANT(100, 55);
+    CALL PRINT$TEST(.'add_re2 $', RESULT);       /* Expected: 155 */
+
+    /* Test address addition */
+    RESULT = ADD$ADDR$REENTRANT(1000, 2345);
+    CALL PRINT$TEST(.'addr_re $', RESULT);       /* Expected: 3345 */
+
+    /* Test with multiple locals */
+    RESULT = COMPUTE$REENTRANT(5, 10);
+    CALL PRINT$TEST(.'comp_re $', RESULT);       /* Expected: 50 + 200 + 15 = 265 */
+END TEST$SIMPLE$REENTRANT;
+
+TEST$RECURSION: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Test factorial */
+    CALL$COUNT = 0;
+    RESULT = FACTORIAL(5);
+    CALL PRINT$TEST(.'fact5 $', RESULT);         /* Expected: 120 */
+    CALL PRINT$TEST(.'fact5_c $', CALL$COUNT);   /* Expected: 5 (5 recursive calls) */
+
+    CALL$COUNT = 0;
+    RESULT = FACTORIAL(6);
+    CALL PRINT$TEST(.'fact6 $', RESULT);         /* Expected: 720 */
+    CALL PRINT$TEST(.'fact6_c $', CALL$COUNT);   /* Expected: 6 */
+
+    CALL$COUNT = 0;
+    RESULT = FACTORIAL(1);
+    CALL PRINT$TEST(.'fact1 $', RESULT);         /* Expected: 1 */
+    CALL PRINT$TEST(.'fact1_c $', CALL$COUNT);   /* Expected: 1 */
+
+    /* Test Fibonacci */
+    RESULT = FIBONACCI(0);
+    CALL PRINT$TEST(.'fib0 $', RESULT);          /* Expected: 0 */
+
+    RESULT = FIBONACCI(1);
+    CALL PRINT$TEST(.'fib1 $', RESULT);          /* Expected: 1 */
+
+    RESULT = FIBONACCI(6);
+    CALL PRINT$TEST(.'fib6 $', RESULT);          /* Expected: 8 */
+
+    RESULT = FIBONACCI(10);
+    CALL PRINT$TEST(.'fib10 $', RESULT);         /* Expected: 55 */
+END TEST$RECURSION;
+
+TEST$NESTED$CALLS: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Nested calls to reentrant procedures */
+    RESULT = ADD$REENTRANT(ADD$REENTRANT(5, 10), ADD$REENTRANT(3, 7));
+    CALL PRINT$TEST(.'nest1 $', RESULT);         /* Expected: 15 + 10 = 25 */
+
+    /* Chain of reentrant computations */
+    RESULT = COMPUTE$REENTRANT(2, COMPUTE$REENTRANT(1, 1) MOD 256);
+    CALL PRINT$TEST(.'nest2 $', RESULT);         /* COMPUTE(1,1) = 10+20+2=32, COMPUTE(2,32) = 20+640+34=694 */
+END TEST$NESTED$CALLS;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Reentrant Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SIMPLE$REENTRANT;
+    CALL TEST$RECURSION;
+    CALL TEST$NESTED$CALLS;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$REENTRANT;
+
+EOF

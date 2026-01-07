@@ -1,0 +1,300 @@
+/*
+ * TEST: IMPLICIT PROCEDURE CALLS (Bug 81e261b regression test)
+ *
+ * Tests that typed procedures called without parentheses are correctly
+ * detected in the call graph.
+ *
+ * Bug: In PL/M-80, typed procedures can be called without parentheses
+ * (e.g., RESULT = MYFUNC; calls MYFUNC). The call graph analysis
+ * only detected CallExpr nodes, missing these implicit calls.
+ * This caused procedures that call each other to incorrectly share
+ * ??AUTO storage, corrupting local variables when the callee ran.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_implicit_calls.plm -o tests/build/test_implicit_calls.mac
+ *   um80 tests/build/test_implicit_calls.mac -o tests/build/test_implicit_calls.rel
+ *   ul80 -o tests/build/test_implicit_calls.com tests/build/test_implicit_calls.rel
+ *   cpmemu tests/build/test_implicit_calls.com
+ */
+
+0100H:
+
+TEST$IMPLICIT$CALLS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * TYPED PROCEDURES THAT CAN BE CALLED IMPLICITLY
+ * ================================================================ */
+
+/* Global counter to track implicit calls */
+DECLARE CALL$COUNTER BYTE;
+
+/* Simple typed procedure - BYTE return */
+GET$FIVE: PROCEDURE BYTE;
+    CALL$COUNTER = CALL$COUNTER + 1;
+    RETURN 5;
+END GET$FIVE;
+
+/* Typed procedure - ADDRESS return */
+GET$HUNDRED: PROCEDURE ADDRESS;
+    CALL$COUNTER = CALL$COUNTER + 1;
+    RETURN 100;
+END GET$HUNDRED;
+
+/* Typed procedure with local variables */
+GET$COMPUTED: PROCEDURE ADDRESS;
+    DECLARE LOCAL1 ADDRESS;
+    DECLARE LOCAL2 ADDRESS;
+    CALL$COUNTER = CALL$COUNTER + 1;
+    LOCAL1 = 50;
+    LOCAL2 = 75;
+    RETURN LOCAL1 + LOCAL2;
+END GET$COMPUTED;
+
+/* ================================================================
+ * TEST: IMPLICIT CALLS AS ASSIGNMENT SOURCE
+ * ================================================================ */
+
+TEST$ASSIGN$IMPLICIT: PROCEDURE;
+    DECLARE RESULT BYTE;
+    DECLARE ADDR ADDRESS;
+
+    /* Implicit call - BYTE procedure */
+    CALL$COUNTER = 0;
+    RESULT = GET$FIVE;  /* No parentheses - implicit call */
+    CALL PRINT$TEST(.'impl_b $', RESULT);        /* Expected: 5 */
+    CALL PRINT$TEST(.'impl_bc $', CALL$COUNTER); /* Expected: 1 (called once) */
+
+    /* Implicit call - ADDRESS procedure */
+    CALL$COUNTER = 0;
+    ADDR = GET$HUNDRED;  /* No parentheses - implicit call */
+    CALL PRINT$TEST(.'impl_a $', ADDR);          /* Expected: 100 */
+    CALL PRINT$TEST(.'impl_ac $', CALL$COUNTER); /* Expected: 1 */
+
+    /* Implicit call with locals */
+    CALL$COUNTER = 0;
+    ADDR = GET$COMPUTED;
+    CALL PRINT$TEST(.'impl_c $', ADDR);          /* Expected: 125 */
+    CALL PRINT$TEST(.'impl_cc $', CALL$COUNTER); /* Expected: 1 */
+END TEST$ASSIGN$IMPLICIT;
+
+/* ================================================================
+ * TEST: IMPLICIT CALLS IN EXPRESSIONS
+ * ================================================================ */
+
+TEST$EXPR$IMPLICIT: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Implicit call in addition */
+    CALL$COUNTER = 0;
+    RESULT = GET$FIVE + 10;
+    CALL PRINT$TEST(.'expr_1 $', RESULT);        /* Expected: 15 */
+
+    /* Multiple implicit calls */
+    CALL$COUNTER = 0;
+    RESULT = GET$FIVE + GET$HUNDRED;
+    CALL PRINT$TEST(.'expr_2 $', RESULT);        /* Expected: 105 */
+    CALL PRINT$TEST(.'expr_2c $', CALL$COUNTER); /* Expected: 2 */
+
+    /* Implicit call with multiplication */
+    RESULT = GET$FIVE * 4;
+    CALL PRINT$TEST(.'expr_3 $', RESULT);        /* Expected: 20 */
+
+    /* Complex expression with implicit calls */
+    RESULT = GET$HUNDRED + GET$COMPUTED - GET$FIVE;
+    CALL PRINT$TEST(.'expr_4 $', RESULT);        /* Expected: 100 + 125 - 5 = 220 */
+END TEST$EXPR$IMPLICIT;
+
+/* ================================================================
+ * TEST: IMPLICIT CALLS IN CONDITIONS
+ * ================================================================ */
+
+TEST$COND$IMPLICIT: PROCEDURE;
+    DECLARE RESULT BYTE;
+
+    /* Implicit call in IF condition */
+    IF GET$FIVE THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'cond_1 $', RESULT);        /* Expected: 1 (5 != 0) */
+
+    /* Implicit call in comparison */
+    IF GET$FIVE > 3 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'cond_2 $', RESULT);        /* Expected: 1 */
+
+    /* Implicit call in DO WHILE */
+    RESULT = 0;
+    DO WHILE GET$FIVE > RESULT;
+        RESULT = RESULT + 1;
+    END;
+    CALL PRINT$TEST(.'cond_3 $', RESULT);        /* Expected: 5 */
+END TEST$COND$IMPLICIT;
+
+/* ================================================================
+ * TEST: CALLER WITH LOCAL VARIABLES (Bug verification)
+ * The bug caused corruption when caller and callee shared ??AUTO
+ * ================================================================ */
+
+CALLEE$FUNC: PROCEDURE ADDRESS;
+    /* This procedure has local variables */
+    DECLARE CALLEE$LOCAL1 ADDRESS;
+    DECLARE CALLEE$LOCAL2 ADDRESS;
+    CALLEE$LOCAL1 = 111;
+    CALLEE$LOCAL2 = 222;
+    RETURN CALLEE$LOCAL1 + CALLEE$LOCAL2;
+END CALLEE$FUNC;
+
+TEST$LOCALS$PRESERVED: PROCEDURE;
+    DECLARE CALLER$LOCAL1 ADDRESS;
+    DECLARE CALLER$LOCAL2 ADDRESS;
+    DECLARE CALLER$LOCAL3 ADDRESS;
+    DECLARE RESULT ADDRESS;
+
+    /* Initialize caller's locals */
+    CALLER$LOCAL1 = 1000;
+    CALLER$LOCAL2 = 2000;
+    CALLER$LOCAL3 = 3000;
+
+    /* Make implicit call - this should NOT corrupt caller's locals */
+    RESULT = CALLEE$FUNC;
+
+    /* Verify caller's locals are unchanged */
+    CALL PRINT$TEST(.'loc_1 $', CALLER$LOCAL1);  /* Expected: 1000 */
+    CALL PRINT$TEST(.'loc_2 $', CALLER$LOCAL2);  /* Expected: 2000 */
+    CALL PRINT$TEST(.'loc_3 $', CALLER$LOCAL3);  /* Expected: 3000 */
+    CALL PRINT$TEST(.'loc_r $', RESULT);         /* Expected: 333 */
+
+    /* Make explicit call for comparison */
+    CALLER$LOCAL1 = 4000;
+    CALLER$LOCAL2 = 5000;
+    CALLER$LOCAL3 = 6000;
+    RESULT = CALLEE$FUNC();
+
+    CALL PRINT$TEST(.'loc_4 $', CALLER$LOCAL1);  /* Expected: 4000 */
+    CALL PRINT$TEST(.'loc_5 $', CALLER$LOCAL2);  /* Expected: 5000 */
+    CALL PRINT$TEST(.'loc_6 $', CALLER$LOCAL3);  /* Expected: 6000 */
+    CALL PRINT$TEST(.'loc_r2 $', RESULT);        /* Expected: 333 */
+END TEST$LOCALS$PRESERVED;
+
+/* ================================================================
+ * TEST: CHAIN OF IMPLICIT CALLS
+ * ================================================================ */
+
+CHAIN$A: PROCEDURE ADDRESS;
+    RETURN 10;
+END CHAIN$A;
+
+CHAIN$B: PROCEDURE ADDRESS;
+    /* Implicit call to CHAIN$A */
+    RETURN CHAIN$A + 20;
+END CHAIN$B;
+
+CHAIN$C: PROCEDURE ADDRESS;
+    /* Implicit call to CHAIN$B which calls CHAIN$A */
+    RETURN CHAIN$B + 30;
+END CHAIN$C;
+
+TEST$CHAIN$CALLS: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    RESULT = CHAIN$A;
+    CALL PRINT$TEST(.'chain_a $', RESULT);       /* Expected: 10 */
+
+    RESULT = CHAIN$B;
+    CALL PRINT$TEST(.'chain_b $', RESULT);       /* Expected: 30 */
+
+    RESULT = CHAIN$C;
+    CALL PRINT$TEST(.'chain_c $', RESULT);       /* Expected: 60 */
+END TEST$CHAIN$CALLS;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Implicit Call Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$ASSIGN$IMPLICIT;
+    CALL TEST$EXPR$IMPLICIT;
+    CALL TEST$COND$IMPLICIT;
+    CALL TEST$LOCALS$PRESERVED;
+    CALL TEST$CHAIN$CALLS;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$IMPLICIT$CALLS;
+
+EOF

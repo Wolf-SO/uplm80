@@ -1,0 +1,298 @@
+/*
+ * TEST: STRUCTURE MEMBER ACCESS (Bug 13a3f0d regression test)
+ *
+ * Tests structure declarations, member access, and BASED structures.
+ *
+ * Bug fixes tested:
+ * - Structure member address generation: generate ADDRESS of structure
+ *   variables instead of loading VALUE
+ * - BASED structure member access: load pointer from base variable
+ *   instead of generating undefined label
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_structures.plm -o tests/build/test_structures.mac
+ *   um80 tests/build/test_structures.mac -o tests/build/test_structures.rel
+ *   ul80 -o tests/build/test_structures.com tests/build/test_structures.rel
+ *   cpmemu tests/build/test_structures.com
+ */
+
+0100H:
+
+TEST$STRUCTURES:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * STRUCTURE DECLARATIONS
+ * ================================================================ */
+
+/* Simple structure with BYTE members */
+DECLARE POINT STRUCTURE(
+    X BYTE,
+    Y BYTE
+);
+
+/* Structure with ADDRESS members */
+DECLARE RECORD STRUCTURE(
+    PTR ADDRESS,
+    COUNT BYTE,
+    FLAGS BYTE
+);
+
+/* Structure with array member */
+DECLARE HEADER STRUCTURE(
+    PSIZE ADDRESS,
+    NAME(8) BYTE,
+    TYPE BYTE
+);
+
+/* Array of structures */
+DECLARE POINTS(5) STRUCTURE(
+    X BYTE,
+    Y BYTE
+);
+
+/* ================================================================
+ * TESTS FOR SIMPLE STRUCTURE ACCESS
+ * ================================================================ */
+
+TEST$SIMPLE$STRUCT: PROCEDURE;
+    /* Test writing to structure members */
+    POINT.X = 10;
+    POINT.Y = 20;
+    CALL PRINT$TEST(.'point_x $', POINT.X);      /* Expected: 10 */
+    CALL PRINT$TEST(.'point_y $', POINT.Y);      /* Expected: 20 */
+
+    /* Test expressions with structure members */
+    CALL PRINT$TEST(.'point_sum $', POINT.X + POINT.Y);  /* Expected: 30 */
+
+    /* Test structure member as address */
+    RECORD.PTR = 1234;
+    RECORD.COUNT = 5;
+    RECORD.FLAGS = 0FFH;
+    CALL PRINT$TEST(.'rec_ptr $', RECORD.PTR);   /* Expected: 1234 */
+    CALL PRINT$TEST(.'rec_cnt $', RECORD.COUNT); /* Expected: 5 */
+    CALL PRINT$TEST(.'rec_flg $', RECORD.FLAGS); /* Expected: 255 */
+END TEST$SIMPLE$STRUCT;
+
+/* ================================================================
+ * TESTS FOR STRUCTURE WITH ARRAY MEMBER
+ * ================================================================ */
+
+TEST$STRUCT$ARRAY: PROCEDURE;
+    DECLARE I BYTE;
+
+    /* Initialize header */
+    HEADER.PSIZE = 256;
+    HEADER.TYPE = 42;
+
+    /* Initialize name array */
+    DO I = 0 TO 7;
+        HEADER.NAME(I) = 'A' + I;  /* 'A', 'B', 'C', ... */
+    END;
+
+    CALL PRINT$TEST(.'hdr_psz $', HEADER.PSIZE); /* Expected: 256 */
+    CALL PRINT$TEST(.'hdr_typ $', HEADER.TYPE);  /* Expected: 42 */
+    CALL PRINT$TEST(.'hdr_nm0 $', HEADER.NAME(0)); /* Expected: 65 ('A') */
+    CALL PRINT$TEST(.'hdr_nm3 $', HEADER.NAME(3)); /* Expected: 68 ('D') */
+    CALL PRINT$TEST(.'hdr_nm7 $', HEADER.NAME(7)); /* Expected: 72 ('H') */
+END TEST$STRUCT$ARRAY;
+
+/* ================================================================
+ * TESTS FOR ARRAY OF STRUCTURES
+ * ================================================================ */
+
+TEST$STRUCT$ARRAY$ACCESS: PROCEDURE;
+    DECLARE I BYTE;
+
+    /* Initialize array of structures */
+    DO I = 0 TO 4;
+        POINTS(I).X = I * 10;
+        POINTS(I).Y = I * 10 + 5;
+    END;
+
+    CALL PRINT$TEST(.'pts0_x $', POINTS(0).X);   /* Expected: 0 */
+    CALL PRINT$TEST(.'pts0_y $', POINTS(0).Y);   /* Expected: 5 */
+    CALL PRINT$TEST(.'pts2_x $', POINTS(2).X);   /* Expected: 20 */
+    CALL PRINT$TEST(.'pts2_y $', POINTS(2).Y);   /* Expected: 25 */
+    CALL PRINT$TEST(.'pts4_x $', POINTS(4).X);   /* Expected: 40 */
+    CALL PRINT$TEST(.'pts4_y $', POINTS(4).Y);   /* Expected: 45 */
+END TEST$STRUCT$ARRAY$ACCESS;
+
+/* ================================================================
+ * TESTS FOR BASED STRUCTURE ACCESS (Bug 13a3f0d)
+ * ================================================================ */
+
+DECLARE PDADR ADDRESS;
+DECLARE PD BASED PDADR STRUCTURE(
+    DCNT BYTE,
+    FLAGS BYTE,
+    BUFPTR ADDRESS
+);
+
+DECLARE STRUCT$BUFFER STRUCTURE(
+    DCNT BYTE,
+    FLAGS BYTE,
+    BUFPTR ADDRESS
+);
+
+TEST$BASED$STRUCT: PROCEDURE;
+    /* Set base pointer to point to a structure */
+    PDADR = .STRUCT$BUFFER;
+
+    /* Write through BASED structure */
+    PD.DCNT = 100;
+    PD.FLAGS = 0ABH;
+    PD.BUFPTR = 5000;
+
+    /* Verify by reading back through BASED */
+    CALL PRINT$TEST(.'pd_dcnt $', PD.DCNT);      /* Expected: 100 */
+    CALL PRINT$TEST(.'pd_flag $', PD.FLAGS);     /* Expected: 171 (0xAB) */
+    CALL PRINT$TEST(.'pd_bufp $', PD.BUFPTR);    /* Expected: 5000 */
+
+    /* Verify by reading through original structure */
+    CALL PRINT$TEST(.'sb_dcnt $', STRUCT$BUFFER.DCNT);   /* Expected: 100 */
+    CALL PRINT$TEST(.'sb_flag $', STRUCT$BUFFER.FLAGS);  /* Expected: 171 */
+    CALL PRINT$TEST(.'sb_bufp $', STRUCT$BUFFER.BUFPTR); /* Expected: 5000 */
+END TEST$BASED$STRUCT;
+
+/* ================================================================
+ * TESTS FOR STRUCTURE ADDRESS OPERATIONS
+ * ================================================================ */
+
+TEST$STRUCT$ADDR: PROCEDURE;
+    DECLARE PTR ADDRESS;
+    DECLARE B BASED PTR BYTE;
+
+    /* Get address of structure member */
+    PTR = .POINT.X;
+    B = 99;
+    CALL PRINT$TEST(.'addr_x $', POINT.X);       /* Expected: 99 */
+
+    PTR = .POINT.Y;
+    B = 88;
+    CALL PRINT$TEST(.'addr_y $', POINT.Y);       /* Expected: 88 */
+
+    /* Get address of array element in structure */
+    PTR = .HEADER.NAME(2);
+    B = 'Z';
+    CALL PRINT$TEST(.'addr_nm $', HEADER.NAME(2)); /* Expected: 90 ('Z') */
+END TEST$STRUCT$ADDR;
+
+/* ================================================================
+ * TESTS FOR NESTED MEMBER ACCESS PATTERNS
+ * ================================================================ */
+
+TEST$COMPLEX$ACCESS: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Multiple operations on same structure */
+    POINT.X = 50;
+    POINT.Y = 30;
+    RESULT = POINT.X * POINT.Y;
+    CALL PRINT$TEST(.'mult $', RESULT);          /* Expected: 1500 */
+
+    /* Conditional with structure members */
+    IF POINT.X > POINT.Y THEN
+        CALL PRINT$TEST(.'cond $', POINT.X);     /* Expected: 50 */
+    ELSE
+        CALL PRINT$TEST(.'cond $', POINT.Y);
+
+    /* Structure member as loop bound */
+    POINT.Y = 5;
+    RESULT = 0;
+    POINT.X = 1;
+    DO WHILE POINT.X <= POINT.Y;
+        RESULT = RESULT + POINT.X;
+        POINT.X = POINT.X + 1;
+    END;
+    CALL PRINT$TEST(.'loop_sum $', RESULT);      /* Expected: 15 (1+2+3+4+5) */
+END TEST$COMPLEX$ACCESS;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Structure Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SIMPLE$STRUCT;
+    CALL TEST$STRUCT$ARRAY;
+    CALL TEST$STRUCT$ARRAY$ACCESS;
+    CALL TEST$BASED$STRUCT;
+    CALL TEST$STRUCT$ADDR;
+    CALL TEST$COMPLEX$ACCESS;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$STRUCTURES;
+
+EOF

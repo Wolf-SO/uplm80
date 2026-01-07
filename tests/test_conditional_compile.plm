@@ -1,0 +1,205 @@
+/*
+ * TEST: CONDITIONAL COMPILATION (Bug 4a246b0 feature)
+ *
+ * Tests conditional compilation directives:
+ *   $set (name) - define a symbol
+ *   $reset (name) - undefine a symbol
+ *   $cond - enable conditional compilation
+ *   $if name - include code if symbol is defined
+ *   $else - else branch
+ *   $endif - end conditional block
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_conditional_compile.plm -D TEST_DEFINED -o tests/build/test_conditional_compile.mac
+ *   um80 tests/build/test_conditional_compile.mac -o tests/build/test_conditional_compile.rel
+ *   ul80 -o tests/build/test_conditional_compile.com tests/build/test_conditional_compile.rel
+ *   cpmemu tests/build/test_conditional_compile.com
+ */
+
+0100H:
+
+TEST$COND$COMPILE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * CONDITIONAL COMPILATION TESTS
+ * ================================================================ */
+
+/* Enable conditional compilation */
+/** $cond **/
+
+/* Define a symbol */
+/** $set (LOCAL_DEFINED) **/
+
+/* Test command-line defined symbol (TEST_DEFINED should be passed via -D) */
+/** $if TEST_DEFINED **/
+DECLARE CMD$LINE$VALUE BYTE INITIAL(100);
+/** $else **/
+DECLARE CMD$LINE$VALUE BYTE INITIAL(0);
+/** $endif **/
+
+/* Test locally defined symbol */
+/** $if LOCAL_DEFINED **/
+DECLARE LOCAL$DEF$VALUE BYTE INITIAL(200);
+/** $else **/
+DECLARE LOCAL$DEF$VALUE BYTE INITIAL(0);
+/** $endif **/
+
+/* Test undefined symbol */
+/** $if UNDEFINED_SYMBOL **/
+DECLARE UNDEF$VALUE BYTE INITIAL(999);
+/** $else **/
+DECLARE UNDEF$VALUE BYTE INITIAL(50);
+/** $endif **/
+
+/* Test $reset */
+/** $set (RESET_TEST) **/
+/** $reset (RESET_TEST) **/
+/** $if RESET_TEST **/
+DECLARE RESET$VALUE BYTE INITIAL(999);
+/** $else **/
+DECLARE RESET$VALUE BYTE INITIAL(75);
+/** $endif **/
+
+/* ================================================================
+ * CONDITIONAL PROCEDURE DEFINITIONS
+ * ================================================================ */
+
+/** $if TEST_DEFINED **/
+GET$CONDITIONAL: PROCEDURE BYTE;
+    RETURN 42;
+END GET$CONDITIONAL;
+/** $else **/
+GET$CONDITIONAL: PROCEDURE BYTE;
+    RETURN 0;
+END GET$CONDITIONAL;
+/** $endif **/
+
+/* ================================================================
+ * TESTS
+ * ================================================================ */
+
+TEST$SYMBOLS: PROCEDURE;
+    /* Test command-line symbol */
+    CALL PRINT$TEST(.'cmd_sym $', CMD$LINE$VALUE);   /* Expected: 100 (if -D TEST_DEFINED) */
+
+    /* Test local symbol */
+    CALL PRINT$TEST(.'loc_sym $', LOCAL$DEF$VALUE);  /* Expected: 200 */
+
+    /* Test undefined symbol */
+    CALL PRINT$TEST(.'undef_s $', UNDEF$VALUE);      /* Expected: 50 */
+
+    /* Test reset symbol */
+    CALL PRINT$TEST(.'reset_s $', RESET$VALUE);      /* Expected: 75 */
+END TEST$SYMBOLS;
+
+TEST$CONDITIONAL$PROC: PROCEDURE;
+    DECLARE RESULT BYTE;
+
+    RESULT = GET$CONDITIONAL;
+    CALL PRINT$TEST(.'cond_p $', RESULT);            /* Expected: 42 */
+END TEST$CONDITIONAL$PROC;
+
+/* Nested conditionals */
+/** $set (OUTER) **/
+/** $set (INNER) **/
+
+/** $if OUTER **/
+/** $if INNER **/
+DECLARE NESTED$VALUE BYTE INITIAL(111);
+/** $else **/
+DECLARE NESTED$VALUE BYTE INITIAL(222);
+/** $endif **/
+/** $else **/
+DECLARE NESTED$VALUE BYTE INITIAL(333);
+/** $endif **/
+
+TEST$NESTED: PROCEDURE;
+    CALL PRINT$TEST(.'nested $', NESTED$VALUE);      /* Expected: 111 */
+END TEST$NESTED;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Conditional Compile$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SYMBOLS;
+    CALL TEST$CONDITIONAL$PROC;
+    CALL TEST$NESTED;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$COND$COMPILE;
+
+EOF
