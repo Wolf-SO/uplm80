@@ -2376,41 +2376,9 @@ class CodeGenerator:
 
         op = condition.op
 
-        # Handle short-circuit AND: (a AND b) is false if a is false OR b is false
-        if op == BinaryOp.AND:
-            # If left is false, whole AND is false -> jump to false_label
-            if not self._gen_condition_jump_false(condition.left, false_label):
-                # Fallback: evaluate left, test for zero
-                self._gen_expr(condition.left)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"z,{false_label}")
-            # If right is false, whole AND is false -> jump to false_label
-            if not self._gen_condition_jump_false(condition.right, false_label):
-                self._gen_expr(condition.right)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"z,{false_label}")
-            return True
-
-        # Handle short-circuit OR: (a OR b) is false only if BOTH a and b are false
-        if op == BinaryOp.OR:
-            true_label = self._new_label("ORTRUE")
-            # If left is true, whole OR is true -> skip to after false check
-            if not self._gen_condition_jump_true(condition.left, true_label):
-                # Fallback: evaluate left, test for non-zero
-                self._gen_expr(condition.left)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"nz,{true_label}")
-            # If right is false, whole OR is false -> jump to false_label
-            if not self._gen_condition_jump_false(condition.right, false_label):
-                self._gen_expr(condition.right)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"z,{false_label}")
-            self._emit_label(true_label)
-            return True
+        # NOTE: PL/M-80 AND and OR are BITWISE operators, not short-circuit logical operators.
+        # IF X AND Y tests if (X bitwise-and Y) is non-zero, NOT if both X and Y are non-zero.
+        # So we do NOT handle AND/OR specially here - they fall through to expression evaluation.
 
         if op not in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
             return False
@@ -2566,39 +2534,9 @@ class CodeGenerator:
 
         op = condition.op
 
-        # Handle short-circuit OR: (a OR b) is true if a is true OR b is true
-        if op == BinaryOp.OR:
-            # If left is true, whole OR is true -> jump to true_label
-            if not self._gen_condition_jump_true(condition.left, true_label):
-                self._gen_expr(condition.left)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"nz,{true_label}")
-            # If right is true, whole OR is true -> jump to true_label
-            if not self._gen_condition_jump_true(condition.right, true_label):
-                self._gen_expr(condition.right)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"nz,{true_label}")
-            return True
-
-        # Handle short-circuit AND: (a AND b) is true only if BOTH are true
-        if op == BinaryOp.AND:
-            false_label = self._new_label("ANDFALSE")
-            # If left is false, skip right evaluation
-            if not self._gen_condition_jump_false(condition.left, false_label):
-                self._gen_expr(condition.left)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"z,{false_label}")
-            # If right is true, AND is true
-            if not self._gen_condition_jump_true(condition.right, true_label):
-                self._gen_expr(condition.right)
-                self._emit("ld", "a,l")
-                self._emit("or", "h")
-                self._emit("jp", f"nz,{true_label}")
-            self._emit_label(false_label)
-            return True
+        # NOTE: PL/M-80 AND and OR are BITWISE operators, not short-circuit logical operators.
+        # IF X OR Y tests if (X bitwise-or Y) is non-zero, NOT if either X or Y is non-zero.
+        # So we do NOT handle AND/OR specially here - they fall through to expression evaluation.
 
         if op not in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
             return False
