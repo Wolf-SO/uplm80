@@ -1,0 +1,231 @@
+/*
+ * TEST: LOW() AND HIGH() BUILT-IN FUNCTIONS
+ *
+ * Tests the LOW() and HIGH() built-ins which extract bytes from ADDRESS values.
+ * LOW(x) returns the low-order (least significant) byte
+ * HIGH(x) returns the high-order (most significant) byte
+ *
+ * Per Intel PL/M-80 manual:
+ * - If expression has ADDRESS value, LOW returns low byte, HIGH returns high byte
+ * - If expression has BYTE value, LOW returns it unchanged, HIGH returns zero
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_low_high.plm -o tests/build/test_low_high.mac
+ *   um80 tests/build/test_low_high.mac -o tests/build/test_low_high.rel
+ *   ul80 -o tests/build/test_low_high.com tests/build/test_low_high.rel
+ *   cpmemu tests/build/test_low_high.com
+ */
+
+0100H:
+
+TEST$LOW$HIGH:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * LOW() AND HIGH() TESTS
+ * ================================================================ */
+
+TEST$LOW$HIGH$CONST: PROCEDURE;
+    DECLARE RESULT BYTE;
+
+    /* Constant tests with ADDRESS values */
+    RESULT = LOW(1234H);
+    CALL PRINT$TEST(.'low_c1 $', RESULT);       /* Expected: 34H = 52 */
+
+    RESULT = HIGH(1234H);
+    CALL PRINT$TEST(.'high_c1 $', RESULT);      /* Expected: 12H = 18 */
+
+    RESULT = LOW(0ABCDH);
+    CALL PRINT$TEST(.'low_c2 $', RESULT);       /* Expected: CDH = 205 */
+
+    RESULT = HIGH(0ABCDH);
+    CALL PRINT$TEST(.'high_c2 $', RESULT);      /* Expected: ABH = 171 */
+
+    /* Edge cases */
+    RESULT = LOW(0);
+    CALL PRINT$TEST(.'low_c3 $', RESULT);       /* Expected: 0 */
+
+    RESULT = HIGH(0);
+    CALL PRINT$TEST(.'high_c3 $', RESULT);      /* Expected: 0 */
+
+    RESULT = LOW(0FFFFH);
+    CALL PRINT$TEST(.'low_c4 $', RESULT);       /* Expected: 255 */
+
+    RESULT = HIGH(0FFFFH);
+    CALL PRINT$TEST(.'high_c4 $', RESULT);      /* Expected: 255 */
+
+    RESULT = LOW(0FF00H);
+    CALL PRINT$TEST(.'low_c5 $', RESULT);       /* Expected: 0 */
+
+    RESULT = HIGH(0FF00H);
+    CALL PRINT$TEST(.'high_c5 $', RESULT);      /* Expected: 255 */
+
+    RESULT = LOW(00FFH);
+    CALL PRINT$TEST(.'low_c6 $', RESULT);       /* Expected: 255 */
+
+    RESULT = HIGH(00FFH);
+    CALL PRINT$TEST(.'high_c6 $', RESULT);      /* Expected: 0 */
+END TEST$LOW$HIGH$CONST;
+
+TEST$LOW$HIGH$VAR: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE RESULT BYTE;
+
+    /* Variable ADDRESS tests */
+    A = 1234H;
+    RESULT = LOW(A);
+    CALL PRINT$TEST(.'low_v1 $', RESULT);       /* Expected: 52 */
+
+    RESULT = HIGH(A);
+    CALL PRINT$TEST(.'high_v1 $', RESULT);      /* Expected: 18 */
+
+    A = 0ABCDH;
+    RESULT = LOW(A);
+    CALL PRINT$TEST(.'low_v2 $', RESULT);       /* Expected: 205 */
+
+    RESULT = HIGH(A);
+    CALL PRINT$TEST(.'high_v2 $', RESULT);      /* Expected: 171 */
+
+    A = 100H;
+    RESULT = LOW(A);
+    CALL PRINT$TEST(.'low_v3 $', RESULT);       /* Expected: 0 */
+
+    RESULT = HIGH(A);
+    CALL PRINT$TEST(.'high_v3 $', RESULT);      /* Expected: 1 */
+END TEST$LOW$HIGH$VAR;
+
+TEST$LOW$HIGH$BYTE: PROCEDURE;
+    DECLARE B BYTE;
+    DECLARE RESULT BYTE;
+
+    /* BYTE argument tests - LOW returns value, HIGH returns 0 */
+    B = 42;
+    RESULT = LOW(B);
+    CALL PRINT$TEST(.'low_b1 $', RESULT);       /* Expected: 42 */
+
+    RESULT = HIGH(B);
+    CALL PRINT$TEST(.'high_b1 $', RESULT);      /* Expected: 0 */
+
+    B = 255;
+    RESULT = LOW(B);
+    CALL PRINT$TEST(.'low_b2 $', RESULT);       /* Expected: 255 */
+
+    RESULT = HIGH(B);
+    CALL PRINT$TEST(.'high_b2 $', RESULT);      /* Expected: 0 */
+
+    B = 0;
+    RESULT = LOW(B);
+    CALL PRINT$TEST(.'low_b3 $', RESULT);       /* Expected: 0 */
+
+    RESULT = HIGH(B);
+    CALL PRINT$TEST(.'high_b3 $', RESULT);      /* Expected: 0 */
+END TEST$LOW$HIGH$BYTE;
+
+TEST$LOW$HIGH$EXPR: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE B BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Expression tests */
+    A = 1000H;
+    RESULT = LOW(A + 34H);
+    CALL PRINT$TEST(.'low_e1 $', RESULT);       /* Expected: 52 (34H) */
+
+    RESULT = HIGH(A + 34H);
+    CALL PRINT$TEST(.'high_e1 $', RESULT);      /* Expected: 16 */
+
+    /* Combining HIGH and LOW to reconstruct value */
+    A = 5678H;
+    B = HIGH(A);
+    CALL PRINT$TEST(.'recn_h $', B);            /* Expected: 86 (56H) */
+
+    B = LOW(A);
+    CALL PRINT$TEST(.'recn_l $', B);            /* Expected: 120 (78H) */
+END TEST$LOW$HIGH$EXPR;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'LOW/HIGH Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'==============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$LOW$HIGH$CONST;
+    CALL TEST$LOW$HIGH$VAR;
+    CALL TEST$LOW$HIGH$BYTE;
+    CALL TEST$LOW$HIGH$EXPR;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$LOW$HIGH;
+
+EOF

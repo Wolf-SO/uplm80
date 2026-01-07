@@ -1,0 +1,212 @@
+/*
+ * TEST: MOVE BUILT-IN PROCEDURE
+ *
+ * Tests the MOVE built-in which copies bytes from source to destination.
+ * CALL MOVE(count, source, destination)
+ *
+ * Per Intel PL/M-80 manual: MOVE transfers a set of contiguous bytes
+ * from source address to destination address.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_move_builtin.plm -o tests/build/test_move_builtin.mac
+ *   um80 tests/build/test_move_builtin.mac -o tests/build/test_move_builtin.rel
+ *   ul80 -o tests/build/test_move_builtin.com tests/build/test_move_builtin.rel
+ *   cpmemu tests/build/test_move_builtin.com
+ */
+
+0100H:
+
+TEST$MOVE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * MOVE() TESTS
+ * ================================================================ */
+
+TEST$MOVE$BASIC: PROCEDURE;
+    DECLARE SRC(10) BYTE;
+    DECLARE DST(10) BYTE;
+    DECLARE I BYTE;
+
+    /* Initialize source with known values */
+    DO I = 0 TO 9;
+        SRC(I) = I + 10;
+    END;
+
+    /* Clear destination */
+    DO I = 0 TO 9;
+        DST(I) = 0;
+    END;
+
+    /* Copy 5 bytes */
+    CALL MOVE(5, .SRC, .DST);
+
+    /* Verify copied bytes */
+    CALL PRINT$TEST(.'mv_d0 $', DST(0));    /* Expected: 10 */
+    CALL PRINT$TEST(.'mv_d1 $', DST(1));    /* Expected: 11 */
+    CALL PRINT$TEST(.'mv_d4 $', DST(4));    /* Expected: 14 */
+
+    /* Verify non-copied bytes are still 0 */
+    CALL PRINT$TEST(.'mv_d5 $', DST(5));    /* Expected: 0 */
+    CALL PRINT$TEST(.'mv_d9 $', DST(9));    /* Expected: 0 */
+END TEST$MOVE$BASIC;
+
+TEST$MOVE$FULL: PROCEDURE;
+    DECLARE SRC(8) BYTE;
+    DECLARE DST(8) BYTE;
+    DECLARE I BYTE;
+
+    /* Initialize source */
+    DO I = 0 TO 7;
+        SRC(I) = 100 + I;
+    END;
+
+    /* Clear destination */
+    DO I = 0 TO 7;
+        DST(I) = 255;
+    END;
+
+    /* Copy all 8 bytes */
+    CALL MOVE(8, .SRC, .DST);
+
+    CALL PRINT$TEST(.'mvf_0 $', DST(0));    /* Expected: 100 */
+    CALL PRINT$TEST(.'mvf_3 $', DST(3));    /* Expected: 103 */
+    CALL PRINT$TEST(.'mvf_7 $', DST(7));    /* Expected: 107 */
+END TEST$MOVE$FULL;
+
+TEST$MOVE$SINGLE: PROCEDURE;
+    DECLARE SRC BYTE;
+    DECLARE DST BYTE;
+
+    SRC = 42;
+    DST = 0;
+
+    /* Copy single byte */
+    CALL MOVE(1, .SRC, .DST);
+
+    CALL PRINT$TEST(.'mv1_d $', DST);       /* Expected: 42 */
+END TEST$MOVE$SINGLE;
+
+TEST$MOVE$ZERO: PROCEDURE;
+    DECLARE SRC(4) BYTE;
+    DECLARE DST(4) BYTE;
+    DECLARE I BYTE;
+
+    DO I = 0 TO 3;
+        SRC(I) = I + 1;
+        DST(I) = 99;
+    END;
+
+    /* Copy zero bytes - destination should be unchanged */
+    CALL MOVE(0, .SRC, .DST);
+
+    CALL PRINT$TEST(.'mv0_0 $', DST(0));    /* Expected: 99 */
+    CALL PRINT$TEST(.'mv0_3 $', DST(3));    /* Expected: 99 */
+END TEST$MOVE$ZERO;
+
+TEST$MOVE$STRING: PROCEDURE;
+    DECLARE MSG DATA('HELLO', 0);
+    DECLARE BUF(6) BYTE;
+    DECLARE I BYTE;
+
+    /* Clear buffer */
+    DO I = 0 TO 5;
+        BUF(I) = 0;
+    END;
+
+    /* Copy string including null */
+    CALL MOVE(6, .MSG, .BUF);
+
+    CALL PRINT$TEST(.'mvs_0 $', BUF(0));    /* Expected: 72 ('H') */
+    CALL PRINT$TEST(.'mvs_1 $', BUF(1));    /* Expected: 69 ('E') */
+    CALL PRINT$TEST(.'mvs_4 $', BUF(4));    /* Expected: 79 ('O') */
+    CALL PRINT$TEST(.'mvs_5 $', BUF(5));    /* Expected: 0 (null) */
+END TEST$MOVE$STRING;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'MOVE() Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$MOVE$BASIC;
+    CALL TEST$MOVE$FULL;
+    CALL TEST$MOVE$SINGLE;
+    CALL TEST$MOVE$ZERO;
+    CALL TEST$MOVE$STRING;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$MOVE;
+
+EOF
