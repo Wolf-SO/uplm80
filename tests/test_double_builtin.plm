@@ -1,11 +1,13 @@
 /*
- * TEST: DOUBLE() BUILT-IN FUNCTION (Bug 863755b regression test)
+ * TEST: DOUBLE() BUILT-IN FUNCTION
  *
- * Tests the DOUBLE() built-in which converts a BYTE to ADDRESS
- * by multiplying by 256 (or equivalently, placing in high byte).
+ * Tests the DOUBLE() built-in which zero-extends a BYTE to ADDRESS.
+ * DOUBLE(x) returns an ADDRESS with high byte = 0, low byte = x.
+ * This is a type conversion function, not multiplication.
  *
- * Bug: Constant folding was returning value unchanged instead of
- * multiplying by 256.
+ * Per Intel PL/M-80 manual: "DOUBLE(expression) returns an ADDRESS
+ * value equivalent to the expression. High-order zeroes are used
+ * to pad BYTE expressions."
  *
  * BUILD:
  *   python -m uplm80.compiler tests/test_double_builtin.plm -o tests/build/test_double_builtin.mac
@@ -86,42 +88,42 @@ END PRINT$TEST;
 TEST$DOUBLE$CONST: PROCEDURE;
     DECLARE RESULT ADDRESS;
 
-    /* Constant folding tests */
+    /* Constant folding tests - DOUBLE zero-extends BYTE to ADDRESS */
     RESULT = DOUBLE(0);
     CALL PRINT$TEST(.'dbl_0 $', RESULT);         /* Expected: 0 */
 
     RESULT = DOUBLE(1);
-    CALL PRINT$TEST(.'dbl_1 $', RESULT);         /* Expected: 256 */
+    CALL PRINT$TEST(.'dbl_1 $', RESULT);         /* Expected: 1 */
 
     RESULT = DOUBLE(2);
-    CALL PRINT$TEST(.'dbl_2 $', RESULT);         /* Expected: 512 */
+    CALL PRINT$TEST(.'dbl_2 $', RESULT);         /* Expected: 2 */
 
     RESULT = DOUBLE(10);
-    CALL PRINT$TEST(.'dbl_10 $', RESULT);        /* Expected: 2560 */
+    CALL PRINT$TEST(.'dbl_10 $', RESULT);        /* Expected: 10 */
 
     RESULT = DOUBLE(255);
-    CALL PRINT$TEST(.'dbl_255 $', RESULT);       /* Expected: 65280 */
+    CALL PRINT$TEST(.'dbl_255 $', RESULT);       /* Expected: 255 */
 
     RESULT = DOUBLE(100);
-    CALL PRINT$TEST(.'dbl_100 $', RESULT);       /* Expected: 25600 */
+    CALL PRINT$TEST(.'dbl_100 $', RESULT);       /* Expected: 100 */
 END TEST$DOUBLE$CONST;
 
 TEST$DOUBLE$VAR: PROCEDURE;
     DECLARE X BYTE;
     DECLARE RESULT ADDRESS;
 
-    /* Variable tests */
+    /* Variable tests - DOUBLE zero-extends BYTE to ADDRESS */
     X = 1;
     RESULT = DOUBLE(X);
-    CALL PRINT$TEST(.'dblv_1 $', RESULT);        /* Expected: 256 */
+    CALL PRINT$TEST(.'dblv_1 $', RESULT);        /* Expected: 1 */
 
     X = 5;
     RESULT = DOUBLE(X);
-    CALL PRINT$TEST(.'dblv_5 $', RESULT);        /* Expected: 1280 */
+    CALL PRINT$TEST(.'dblv_5 $', RESULT);        /* Expected: 5 */
 
     X = 128;
     RESULT = DOUBLE(X);
-    CALL PRINT$TEST(.'dblv_128 $', RESULT);      /* Expected: 32768 */
+    CALL PRINT$TEST(.'dblv_128 $', RESULT);      /* Expected: 128 */
 
     X = 0;
     RESULT = DOUBLE(X);
@@ -137,18 +139,18 @@ TEST$DOUBLE$EXPR: PROCEDURE;
     X = 1;
     Y = 5;
     RESULT = DOUBLE(X) + Y;
-    CALL PRINT$TEST(.'dble_1 $', RESULT);        /* Expected: 256 + 5 = 261 */
+    CALL PRINT$TEST(.'dble_1 $', RESULT);        /* Expected: 1 + 5 = 6 */
 
-    /* Building 16-bit address from high and low bytes */
-    X = 2;    /* High byte */
-    Y = 100;  /* Low byte */
+    /* DOUBLE just zero-extends, so this adds two small values */
+    X = 2;
+    Y = 100;
     RESULT = DOUBLE(X) + Y;
-    CALL PRINT$TEST(.'dble_2 $', RESULT);        /* Expected: 512 + 100 = 612 (0x0264) */
+    CALL PRINT$TEST(.'dble_2 $', RESULT);        /* Expected: 2 + 100 = 102 */
 
     /* Chain of operations */
     X = 1;
     RESULT = DOUBLE(X) + DOUBLE(X);
-    CALL PRINT$TEST(.'dble_3 $', RESULT);        /* Expected: 256 + 256 = 512 */
+    CALL PRINT$TEST(.'dble_3 $', RESULT);        /* Expected: 1 + 1 = 2 */
 END TEST$DOUBLE$EXPR;
 
 TEST$DOUBLE$COMBINE: PROCEDURE;
@@ -156,21 +158,21 @@ TEST$DOUBLE$COMBINE: PROCEDURE;
     DECLARE LOW BYTE;
     DECLARE ADDR ADDRESS;
 
-    /* Common pattern: combine high and low bytes into address */
+    /* DOUBLE just zero-extends - these tests verify the addition */
     HIGH = 01H;
     LOW = 00H;
     ADDR = DOUBLE(HIGH) + LOW;
-    CALL PRINT$TEST(.'comb_1 $', ADDR);          /* Expected: 256 (0x0100) */
+    CALL PRINT$TEST(.'comb_1 $', ADDR);          /* Expected: 1 + 0 = 1 */
 
     HIGH = 0FFH;
     LOW = 0FFH;
     ADDR = DOUBLE(HIGH) + LOW;
-    CALL PRINT$TEST(.'comb_2 $', ADDR);          /* Expected: 65535 (0xFFFF) */
+    CALL PRINT$TEST(.'comb_2 $', ADDR);          /* Expected: 255 + 255 = 510 */
 
     HIGH = 10H;
     LOW = 20H;
     ADDR = DOUBLE(HIGH) + LOW;
-    CALL PRINT$TEST(.'comb_3 $', ADDR);          /* Expected: 4128 (0x1020) */
+    CALL PRINT$TEST(.'comb_3 $', ADDR);          /* Expected: 16 + 32 = 48 */
 END TEST$DOUBLE$COMBINE;
 
 /* ================================================================

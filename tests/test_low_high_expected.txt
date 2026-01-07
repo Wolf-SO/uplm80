@@ -1,0 +1,33 @@
+LOW/HIGH Tests
+==============
+
+low_c1  52
+high_c1  18
+low_c2  205
+high_c2  171
+low_c3  0
+high_c3  0
+low_c4  255
+high_c4  255
+low_c5  0
+high_c5  255
+low_c6  255
+high_c6  0
+low_v1  52
+high_v1  18
+low_v2  205
+high_v2  171
+low_v3  0
+high_v3  1
+low_b1  42
+high_b1  0
+low_b2  255
+high_b2  0
+low_b3  0
+high_b3  0
+low_e1  52
+high_e1  16
+recn_h  86
+recn_l  120
+
+Done.

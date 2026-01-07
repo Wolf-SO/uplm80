@@ -1,0 +1,20 @@
+MOVE() Tests
+============
+
+mv_d0  10
+mv_d1  11
+mv_d4  14
+mv_d5  0
+mv_d9  0
+mvf_0  100
+mvf_3  103
+mvf_7  107
+mv1_d  42
+mv0_0  99
+mv0_3  99
+mvs_0  72
+mvs_1  69
+mvs_4  79
+mvs_5  0
+
+Done.

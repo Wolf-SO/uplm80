@@ -108,6 +108,9 @@ run_test() {
         return 1
     fi
 
+    # Strip CR from CP/M output for comparison
+    tr -d '\r' < "$output_file" > "$output_file.tmp" && mv "$output_file.tmp" "$output_file"
+
     # Compare output with expected
     if diff -q "$output_file" "$expected_file" > /dev/null 2>&1; then
         echo -e "${GREEN}PASSED${NC}"
