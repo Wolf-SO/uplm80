@@ -3869,6 +3869,82 @@ class CodeGenerator:
         # may touch DE
         return False
 
+    def _label_reg_need(self, expr: Expr) -> int:
+        """
+        Label expression with minimum registers needed (Sethi-Ullman algorithm).
+
+        For Z80 with HL as primary and DE as secondary register:
+        - Leaf expressions (literals, identifiers): need 1 register
+        - Unary expressions: same as operand
+        - Binary expressions: if both subtrees need same count, need one more
+          to hold intermediate; otherwise need max(left, right)
+
+        Returns the minimum number of 16-bit registers needed to evaluate this
+        expression without spilling.
+        """
+        if isinstance(expr, (NumberLiteral, StringLiteral)):
+            return 1  # Load constant into register
+
+        if isinstance(expr, Identifier):
+            # Simple variable load needs 1 register
+            # But procedure calls may need more (conservatively 2)
+            sym = self._lookup_symbol(expr.name)
+            if sym and sym.kind == SymbolKind.PROCEDURE:
+                return 2  # Function calls may use both registers
+            return 1
+
+        if isinstance(expr, UnaryExpr):
+            # Unary ops don't need extra registers
+            return self._label_reg_need(expr.operand)
+
+        if isinstance(expr, BinaryExpr):
+            left_need = self._label_reg_need(expr.left)
+            right_need = self._label_reg_need(expr.right)
+
+            if left_need == right_need:
+                # Both need same - need one more to hold intermediate
+                return left_need + 1
+            else:
+                # Evaluate harder side first, reuse registers
+                return max(left_need, right_need)
+
+        if isinstance(expr, SubscriptExpr):
+            # Array subscript: base + index calculation
+            # Needs 2 registers (base in DE, index in HL)
+            base_need = 1  # Base address is typically 1
+            if isinstance(expr.index, (NumberLiteral, Identifier)):
+                return max(base_need, 1)  # Simple index
+            else:
+                index_need = self._label_reg_need(expr.index)
+                if base_need == index_need:
+                    return base_need + 1
+                return max(base_need, index_need)
+
+        if isinstance(expr, CallExpr):
+            # Function calls may clobber registers - conservatively need 2
+            return 2
+
+        if isinstance(expr, MemberExpr):
+            # Structure member access - similar to subscript
+            return self._label_reg_need(expr.base)
+
+        # Default: assume 2 registers for safety
+        return 2
+
+    def _lookup_symbol(self, name: str) -> 'Symbol | None':
+        """Helper to look up a symbol by name, checking scopes."""
+        sym = None
+        if self.current_proc:
+            parts = self.current_proc.split('$')
+            for i in range(len(parts), 0, -1):
+                scoped_name = '$'.join(parts[:i]) + '$' + name
+                sym = self.symbols.lookup(scoped_name)
+                if sym:
+                    break
+        if sym is None:
+            sym = self.symbols.lookup(name)
+        return sym
+
     def _gen_expr(self, expr: Expr) -> DataType:
         """
         Generate code for an expression.
@@ -4761,55 +4837,89 @@ class CodeGenerator:
                     return DataType.ADDRESS
 
         # Fall through to 16-bit operations
-        # Optimize evaluation order to avoid PUSH/POP when possible:
-        # If left is simple (doesn't touch DE), evaluate right first, save to DE, then left
-        if self._expr_preserves_de(expr.left):
-            # Evaluate right first
+        # Use register allocator to manage DE for holding one operand
+        # This automatically handles nested expressions via spill/restore
+
+        # Sethi-Ullman optimization: evaluate the subtree needing more registers first
+        # This minimizes spills by freeing registers before the simpler subtree needs them
+        left_need = self._label_reg_need(expr.left)
+        right_need = self._label_reg_need(expr.right)
+
+        # Path 1: Simple left optimization - if left is simple AND DE is free,
+        # evaluate right first to avoid the extra ex de,hl
+        if self._expr_preserves_de(expr.left) and self.regs.is_free('de'):
+            # Evaluate right first -> HL, then move to DE
             right_result = self._gen_expr(expr.right)
             if right_result == DataType.BYTE:
                 self._emit("ld", "e,a")
                 self._emit("ld", "d,0")
             else:
                 self._emit("ex", "de,hl")  # DE = right
-            # Now evaluate left - DE is preserved
+            # Mark DE as busy (it holds right operand)
+            self.regs.mark_busy('de', 'binary_right_simple')
+            # Now evaluate left - DE is preserved since left is simple
             left_result = self._gen_expr(expr.left)
             if left_result == DataType.BYTE:
                 self._emit("ld", "l,a")
                 self._emit("ld", "h,0")
-            # Now: HL = left, DE = right (no PUSH/POP needed!)
-        elif self._is_simple_address_expr(expr.left) and op == BinaryOp.ADD:
-            # LEFT is simple (constant/identifier that can be loaded into DE)
-            # Evaluate right first (which ends up in HL), then load left into DE
-            # This avoids PUSH/POP for patterns like: DBUFF + (NDEST + offset)
-            right_result = self._gen_expr(expr.right)
-            if right_result == DataType.BYTE:
-                self._emit("ld", "l,a")
-                self._emit("ld", "h,0")
-            # Load simple left expression into DE
-            self._gen_simple_to_de(expr.left)
-            # Now: HL = right, DE = left - swap for correct ADD order
-            self._emit("ex", "de,hl")  # HL = left, DE = right
-        else:
-            # Left is complex - use traditional PUSH/POP approach
-            # Evaluate left operand
-            left_result = self._gen_expr(expr.left)
-            if left_result == DataType.BYTE:
-                # Extend A to HL
-                self._emit("ld", "l,a")
-                self._emit("ld", "h,0")
-            self._emit("push", "hl")  # Save left on stack
-
-            # Evaluate right operand
-            right_result = self._gen_expr(expr.right)
-            if right_result == DataType.BYTE:
-                # Extend A to HL
-                self._emit("ld", "l,a")
-                self._emit("ld", "h,0")
-
-            # Pop left into DE
-            self._emit("ex", "de,hl")  # DE = right
-            self._emit("pop", "hl")  # HL = left
             # Now: HL = left, DE = right
+            self.regs.mark_free('de')
+            used_general_path = False
+
+        # Path 2: Sethi-Ullman - right needs more registers, evaluate it first
+        # This minimizes spills by computing the harder subtree before claiming DE
+        elif right_need > left_need:
+            # Evaluate right first (harder subtree) -> HL
+            right_result = self._gen_expr(expr.right)
+            if right_result == DataType.BYTE:
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+
+            # Claim DE to hold right operand while we evaluate left
+            self.regs.need_reg('de', 'binary_right_sethi', self._emit)
+            self._emit("ex", "de,hl")  # DE = right
+
+            # Evaluate left operand (simpler subtree) -> HL
+            # This may recursively need DE, causing spill of our right value
+            left_result = self._gen_expr(expr.left)
+            if left_result == DataType.BYTE:
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+
+            # Now: HL = left, DE = right (restored from spill if inner expr used DE)
+            # This is already in the correct order for HL op DE
+            used_general_path = True
+
+        else:
+            # Path 3: General case - left needs >= registers, evaluate it first
+            # Evaluate left operand -> HL
+            left_result = self._gen_expr(expr.left)
+            if left_result == DataType.BYTE:
+                # Extend A to HL
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+
+            # Claim DE to hold left operand while we evaluate right
+            # If DE is already busy (nested binary expr), it will be spilled
+            self.regs.need_reg('de', 'binary_left', self._emit)
+            self._emit("ex", "de,hl")  # DE = left
+
+            # Evaluate right operand -> HL
+            # This may recursively need DE, causing spill of our left value.
+            # When inner expr releases DE, our left value is restored.
+            right_result = self._gen_expr(expr.right)
+            if right_result == DataType.BYTE:
+                # Extend A to HL
+                self._emit("ld", "l,a")
+                self._emit("ld", "h,0")
+
+            # Now: HL = right, DE = left (restored from spill if inner expr used DE)
+            # Swap so HL = left, DE = right (standard order for operations)
+            self._emit("ex", "de,hl")
+
+            # NOTE: Don't release DE yet - we still need it for the operation!
+            # Will release after the operation below.
+            used_general_path = True
 
         if op == BinaryOp.ADD:
             self._emit("add", "hl,de")  # HL = HL + DE
@@ -4859,6 +4969,9 @@ class CodeGenerator:
         elif op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,
                    BinaryOp.LE, BinaryOp.GE):
             # Comparison returns result in A (BYTE), not HL
+            # Release DE before returning if we used the general path
+            if used_general_path:
+                self.regs.release_reg('de', self._emit)
             return self._gen_comparison(op)
 
         elif op == BinaryOp.PLUS:
@@ -4878,6 +4991,10 @@ class CodeGenerator:
             self._emit("ld", "a,h")
             self._emit("sbc", "a,d")
             self._emit("ld", "h,a")
+
+        # Release DE after operation if we used the general path
+        if used_general_path:
+            self.regs.release_reg('de', self._emit)
 
         return DataType.ADDRESS
 
@@ -5297,45 +5414,46 @@ class CodeGenerator:
             self._emit_add_hl_const(offset)
         else:
             # Variable index with complex base or ADDRESS index
+            # Use register allocator for DE to hold base while evaluating index
+            # This integrates with binary expression spill/restore mechanism
             idx_type = self._get_expr_type(expr.index)
 
-            if idx_type == DataType.BYTE and elem_size == 1:
-                # BYTE index - base is in HL, swap to DE, get index
-                self._emit("ex", "de,hl")  # DE = base
-                self._gen_expr(expr.index)  # A = index (byte)
+            # Claim DE to hold base address while evaluating index
+            # If DE is already busy (e.g., from outer binary expression), it will be spilled
+            self.regs.need_reg('de', 'subscript_base', self._emit)
+            self._emit("ex", "de,hl")  # DE = base
+
+            # Get index - may recursively use DE (triggers spill/restore)
+            result_type = self._gen_expr(expr.index)
+
+            # If index was BYTE (in A), extend to HL
+            if result_type == DataType.BYTE:
                 self._emit("ld", "l,a")
-                self._emit("ld", "h,0")  # HL = index (zero-extended)
-                self._emit("add", "hl,de")  # HL = index + base
-            else:
-                # General case with PUSH/POP
-                self._emit("push", "hl")  # Save base
+                self._emit("ld", "h,0")
 
-                # Get index
-                result_type = self._gen_expr(expr.index)
+            if elem_size > 1:
+                # Multiply index by element size
+                # Check if elem_size is a power of 2: x & (x-1) == 0
+                if (elem_size & (elem_size - 1)) == 0:
+                    # Power of 2: use repeated add hl,hl
+                    temp = elem_size
+                    while temp > 1:
+                        self._emit("add", "hl,hl")  # HL *= 2
+                        temp >>= 1
+                else:
+                    # General case: HL = HL * elem_size using multiply routine
+                    # Need to save DE (base) across multiply call
+                    self._emit("push", "de")
+                    self._emit("ld", f"de,{elem_size}")
+                    self._emit("call", "??mul16")
+                    self._emit("pop", "de")
+                    self.needs_runtime.add("mul16")
 
-                # If index was BYTE (in A), extend to HL
-                if result_type == DataType.BYTE:
-                    self._emit("ld", "l,a")
-                    self._emit("ld", "h,0")
+            # Add index to base - DE holds base (possibly restored from spill)
+            self._emit("add", "hl,de")
 
-                if elem_size > 1:
-                    # Multiply index by element size
-                    # Check if elem_size is a power of 2: x & (x-1) == 0
-                    if (elem_size & (elem_size - 1)) == 0:
-                        # Power of 2: use repeated add hl,hl
-                        temp = elem_size
-                        while temp > 1:
-                            self._emit("add", "hl,hl")  # HL *= 2
-                            temp >>= 1
-                    else:
-                        # General case: HL = HL * elem_size using multiply routine
-                        self._emit("ld", f"de,{elem_size}")
-                        self._emit("call", "??mul16")
-                        self.needs_runtime.add("mul16")
-
-                # Add index to base
-                self._emit("pop", "de")
-                self._emit("add", "hl,de")
+            # Release DE after operation
+            self.regs.release_reg('de', self._emit)
 
     def _get_member_info(self, expr: MemberExpr) -> tuple[int, DataType]:
         """Get offset and type for a structure member."""
@@ -5503,16 +5621,17 @@ class CodeGenerator:
                 offset = idx_expr.value * elem_size
                 self._emit_add_hl_const(offset)
             else:
-                # Variable index
-                self._emit("push", "hl")  # Save member addr
+                # Variable index - use allocator for DE
+                self.regs.need_reg('de', 'member_subscript_base', self._emit)
+                self._emit("ex", "de,hl")  # DE = member addr
                 idx_type = self._gen_expr(idx_expr)
                 if idx_type == DataType.BYTE:
                     self._emit("ld", "l,a")
                     self._emit("ld", "h,0")
                 if elem_size == 2:
                     self._emit("add", "hl,hl")  # HL *= 2
-                self._emit("pop", "de")  # DE = member addr
                 self._emit("add", "hl,de")  # HL = addr + offset
+                self.regs.release_reg('de', self._emit)
 
             # Load the value from the computed address
             if member_type == DataType.ADDRESS:
@@ -6304,16 +6423,17 @@ class CodeGenerator:
                     offset = idx_expr.value * elem_size
                     self._emit_add_hl_const(offset)
                 else:
-                    # Variable index
-                    self._emit("push", "hl")  # Save member addr
+                    # Variable index - use allocator for DE
+                    self.regs.need_reg('de', 'member_subscript_addr', self._emit)
+                    self._emit("ex", "de,hl")  # DE = member addr
                     idx_type = self._gen_expr(idx_expr)
                     if idx_type == DataType.BYTE:
                         self._emit("ld", "l,a")
                         self._emit("ld", "h,0")
                     if elem_size == 2:
                         self._emit("add", "hl,hl")  # HL *= 2
-                    self._emit("pop", "de")  # DE = member addr
                     self._emit("add", "hl,de")  # HL = addr + offset
+                    self.regs.release_reg('de', self._emit)
                 return DataType.ADDRESS
             # Otherwise evaluate as expression
             self._gen_expr(operand)
