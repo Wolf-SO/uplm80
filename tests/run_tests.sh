@@ -49,6 +49,16 @@ get_compiler_options() {
     esac
 }
 
+# Function to get test-specific cpmemu options
+get_cpmemu_options() {
+    local test_name="$1"
+    case "$test_name" in
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 # Function to compile and run a single test
 run_test() {
     local test_name="$1"
@@ -59,6 +69,7 @@ run_test() {
     local com_file="$BUILD_DIR/${test_name}.com"
     local output_file="$BUILD_DIR/${test_name}_output.txt"
     local extra_opts=$(get_compiler_options "$test_name")
+    local cpmemu_opts=$(get_cpmemu_options "$test_name")
 
     echo -n "Testing $test_name... "
 
@@ -100,8 +111,8 @@ run_test() {
         return 1
     fi
 
-    # Run with CP/M emulator
-    if ! $CPMEMU "$com_file" > "$output_file" 2>"$BUILD_DIR/${test_name}_run.err"; then
+    # Run with CP/M emulator (with any test-specific options)
+    if ! $CPMEMU $cpmemu_opts "$com_file" > "$output_file" 2>"$BUILD_DIR/${test_name}_run.err"; then
         echo -e "${RED}FAILED${NC} (runtime error)"
         cat "$BUILD_DIR/${test_name}_run.err"
         ((FAILED++))

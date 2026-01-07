@@ -1,0 +1,183 @@
+/*
+ * TEST EXPLICIT LABEL DECLARATIONS
+ *
+ * Tests DECLARE identifier LABEL; syntax which allows forward
+ * references to labels and extended scope.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_label_decl.plm -o tests/build/test_label_decl.mac
+ *   um80 tests/build/test_label_decl.mac
+ *   ul80 -o tests/build/test_label_decl.com tests/build/test_label_decl.rel tests/test_stubs.rel
+ *   cpmemu tests/build/test_label_decl.com
+ */
+
+0100H:  /* CP/M ORIGIN */
+
+TEST$LABEL:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS INTERFACE */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* PRINT SINGLE CHARACTER */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* PRINT STRING TERMINATED BY '$' */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* PRINT NEWLINE */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* PRINT DECIMAL NUMBER */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* PRINT TEST RESULT */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * TEST 1: FORWARD REFERENCE WITH EXPLICIT LABEL DECLARATION
+ *
+ * Normally labels must be defined before they can be used in GOTO.
+ * With explicit declaration, we can reference labels before they're defined.
+ * ================================================================ */
+
+DECLARE FORWARD$TARGET LABEL;
+
+DECLARE X BYTE;
+X = 0;
+
+/* Jump forward to a label defined later */
+X = 1;
+GOTO FORWARD$TARGET;
+X = 99;  /* Should be skipped */
+
+FORWARD$TARGET:
+CALL PRINT$TEST(.'lbl_1 $', X);  /* Expected: 1 */
+
+/* ================================================================
+ * TEST 2: LABEL SCOPE EXTENSION
+ *
+ * Declaring a label at an outer scope allows jumping from
+ * an inner scope to the outer label.
+ * ================================================================ */
+
+DECLARE OUTER$EXIT LABEL;
+
+X = 0;
+DO;  /* Inner block */
+    X = 2;
+    GOTO OUTER$EXIT;
+    X = 99;
+END;
+
+OUTER$EXIT:
+CALL PRINT$TEST(.'lbl_2 $', X);  /* Expected: 2 */
+
+/* ================================================================
+ * TEST 3: FACTORED LABEL DECLARATION
+ *
+ * Multiple labels can be declared in a single statement.
+ * ================================================================ */
+
+DECLARE (POINT$A, POINT$B, POINT$C) LABEL;
+
+DECLARE COUNTER BYTE;
+COUNTER = 0;
+
+GOTO POINT$B;
+
+POINT$A:
+    COUNTER = COUNTER + 1;
+    GOTO POINT$C;
+
+POINT$B:
+    COUNTER = COUNTER + 10;
+    GOTO POINT$A;
+
+POINT$C:
+    COUNTER = COUNTER + 100;
+
+CALL PRINT$TEST(.'lbl_3 $', COUNTER);  /* Expected: 111 (10+1+100) */
+
+/* ================================================================
+ * TEST 4: LABEL IN LOOP EXIT
+ *
+ * Using labeled loop exit with forward declaration.
+ * ================================================================ */
+
+DECLARE DONE$LOOP LABEL;
+
+DECLARE I BYTE;
+DECLARE SUM BYTE;
+SUM = 0;
+
+DO I = 1 TO 10;
+    SUM = SUM + I;
+    IF SUM > 15 THEN GOTO DONE$LOOP;
+END;
+
+DONE$LOOP:
+CALL PRINT$TEST(.'lbl_4 $', SUM);  /* Expected: 21 (1+2+3+4+5+6=21) */
+
+/* ================================================================
+ * TEST 5: NESTED SCOPE WITH EXPLICIT LABEL
+ * ================================================================ */
+
+DECLARE ESCAPE LABEL;
+
+X = 5;
+DO;
+    DO;
+        DO;
+            GOTO ESCAPE;
+            X = 0;  /* Never reached */
+        END;
+    END;
+END;
+
+ESCAPE:
+CALL PRINT$TEST(.'lbl_5 $', X);  /* Expected: 5 */
+
+END TEST$LABEL;

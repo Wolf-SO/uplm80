@@ -1,0 +1,12 @@
+pm_1l  0
+pm_1h  1
+pm_2l  69
+pm_2h  35
+pm_3l  0
+pm_3h  0
+pm_4l  255
+pm_4h  0
+pm_5l  52
+pm_5h  18
+pm_6l  255
+pm_6h  15

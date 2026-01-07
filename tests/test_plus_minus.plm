@@ -1,0 +1,183 @@
+/*
+ * TEST PLUS AND MINUS OPERATORS (CARRY-AWARE ARITHMETIC)
+ *
+ * PLUS and MINUS are like + and - but include the carry flag in the operation.
+ * PLUS = ADC (add with carry)
+ * MINUS = SBB (subtract with borrow)
+ *
+ * These are primarily used for multi-byte arithmetic where carries
+ * must propagate between bytes.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_plus_minus.plm -o tests/build/test_plus_minus.mac
+ *   um80 tests/build/test_plus_minus.mac
+ *   ul80 -o tests/build/test_plus_minus.com tests/build/test_plus_minus.rel tests/test_stubs.rel
+ *   cpmemu tests/build/test_plus_minus.com
+ */
+
+0100H:  /* CP/M ORIGIN */
+
+TEST$PLUS$MINUS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS INTERFACE */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* PRINT SINGLE CHARACTER */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* PRINT STRING TERMINATED BY '$' */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* PRINT NEWLINE */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* PRINT DECIMAL NUMBER */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* PRINT TEST RESULT */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * TEST PLUS - ADD WITH CARRY
+ *
+ * Multi-byte addition: Add two 16-bit numbers stored as byte pairs
+ * using + for low byte (clears carry first) and PLUS for high byte
+ * ================================================================ */
+
+DECLARE (A$LOW, A$HIGH, B$LOW, B$HIGH) BYTE;
+DECLARE (R$LOW, R$HIGH) BYTE;
+
+/* TEST 1: 0x00FF + 0x0001 = 0x0100 */
+/* Low bytes: FF + 01 = 00 with carry */
+/* High bytes: 00 + 00 + carry = 01 */
+A$LOW = 0FFH;
+A$HIGH = 00H;
+B$LOW = 01H;
+B$HIGH = 00H;
+
+R$LOW = A$LOW + B$LOW;          /* Sets carry if overflow */
+R$HIGH = A$HIGH PLUS B$HIGH;    /* Adds with previous carry */
+
+CALL PRINT$TEST(.'pm_1l $', R$LOW);   /* Expected: 0 */
+CALL PRINT$TEST(.'pm_1h $', R$HIGH);  /* Expected: 1 */
+
+/* TEST 2: 0x1234 + 0x1111 = 0x2345 */
+/* Low: 34 + 11 = 45 (no carry) */
+/* High: 12 + 11 + 0 = 23 */
+A$LOW = 34H;
+A$HIGH = 12H;
+B$LOW = 11H;
+B$HIGH = 11H;
+
+R$LOW = A$LOW + B$LOW;
+R$HIGH = A$HIGH PLUS B$HIGH;
+
+CALL PRINT$TEST(.'pm_2l $', R$LOW);   /* Expected: 69 (45H) */
+CALL PRINT$TEST(.'pm_2h $', R$HIGH);  /* Expected: 35 (23H) */
+
+/* TEST 3: 0xFFFF + 0x0001 = 0x10000 (overflow to 0) */
+/* Low: FF + 01 = 00 with carry */
+/* High: FF + 00 + 1 = 00 with carry (overflow) */
+A$LOW = 0FFH;
+A$HIGH = 0FFH;
+B$LOW = 01H;
+B$HIGH = 00H;
+
+R$LOW = A$LOW + B$LOW;
+R$HIGH = A$HIGH PLUS B$HIGH;
+
+CALL PRINT$TEST(.'pm_3l $', R$LOW);   /* Expected: 0 */
+CALL PRINT$TEST(.'pm_3h $', R$HIGH);  /* Expected: 0 */
+
+/* ================================================================
+ * TEST MINUS - SUBTRACT WITH BORROW
+ *
+ * Multi-byte subtraction uses - for low byte, MINUS for high byte
+ * ================================================================ */
+
+/* TEST 4: 0x0100 - 0x0001 = 0x00FF */
+/* Low: 00 - 01 = FF with borrow */
+/* High: 01 - 00 - borrow = 00 */
+A$LOW = 00H;
+A$HIGH = 01H;
+B$LOW = 01H;
+B$HIGH = 00H;
+
+R$LOW = A$LOW - B$LOW;
+R$HIGH = A$HIGH MINUS B$HIGH;
+
+CALL PRINT$TEST(.'pm_4l $', R$LOW);   /* Expected: 255 */
+CALL PRINT$TEST(.'pm_4h $', R$HIGH);  /* Expected: 0 */
+
+/* TEST 5: 0x2345 - 0x1111 = 0x1234 */
+/* Low: 45 - 11 = 34 (no borrow) */
+/* High: 23 - 11 - 0 = 12 */
+A$LOW = 45H;
+A$HIGH = 23H;
+B$LOW = 11H;
+B$HIGH = 11H;
+
+R$LOW = A$LOW - B$LOW;
+R$HIGH = A$HIGH MINUS B$HIGH;
+
+CALL PRINT$TEST(.'pm_5l $', R$LOW);   /* Expected: 52 (34H) */
+CALL PRINT$TEST(.'pm_5h $', R$HIGH);  /* Expected: 18 (12H) */
+
+/* TEST 6: 0x1000 - 0x0001 = 0x0FFF */
+/* Low: 00 - 01 = FF with borrow */
+/* High: 10 - 00 - 1 = 0F */
+A$LOW = 00H;
+A$HIGH = 10H;
+B$LOW = 01H;
+B$HIGH = 00H;
+
+R$LOW = A$LOW - B$LOW;
+R$HIGH = A$HIGH MINUS B$HIGH;
+
+CALL PRINT$TEST(.'pm_6l $', R$LOW);   /* Expected: 255 */
+CALL PRINT$TEST(.'pm_6h $', R$HIGH);  /* Expected: 15 */
+
+END TEST$PLUS$MINUS;
