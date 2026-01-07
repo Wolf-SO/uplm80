@@ -1,0 +1,9 @@
+dec_1  44
+dec_2  72
+dec_3  90
+dec_4  00
+dec_5  00
+dec_6  20
+dec_7l  55
+dec_7h  55
+dec_8  33

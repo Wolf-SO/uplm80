@@ -1,0 +1,129 @@
+/*
+ * TEST DEC (DECIMAL ADJUST) FOR BCD ARITHMETIC
+ *
+ * Tests the DEC built-in procedure which performs decimal adjust
+ * after addition to convert binary result to BCD.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_dec_bcd.plm -o tests/build/test_dec_bcd.mac
+ *   um80 tests/build/test_dec_bcd.mac
+ *   ul80 -o tests/build/test_dec_bcd.com tests/build/test_dec_bcd.rel tests/test_stubs.rel
+ *   cpmemu tests/build/test_dec_bcd.com
+ */
+
+0100H:  /* CP/M ORIGIN */
+
+TEST$DEC:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS INTERFACE */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* PRINT SINGLE CHARACTER */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* PRINT STRING TERMINATED BY '$' */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* PRINT NEWLINE */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* PRINT HEX BYTE */
+PRINT$HEX: PROCEDURE(V);
+    DECLARE V BYTE;
+    DECLARE HEX$DIGIT(16) DATA('0123456789ABCDEF');
+    CALL PRINT$CHAR(HEX$DIGIT(SHR(V, 4)));
+    CALL PRINT$CHAR(HEX$DIGIT(V AND 0FH));
+END PRINT$HEX;
+
+/* PRINT TEST RESULT */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE BYTE;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$HEX(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* TEST VARIABLES */
+DECLARE (A, B, R) BYTE;
+
+/* ================================================================
+ * TEST DEC - DECIMAL ADJUST FOR BCD ARITHMETIC
+ *
+ * DEC performs the 8080 DAA instruction on the result of an addition.
+ * It converts a binary sum of two BCD values to a proper BCD result.
+ *
+ * BCD representation: each nibble is 0-9
+ * 22H = BCD 22 (decimal 22)
+ * 99H = BCD 99 (decimal 99)
+ * ================================================================ */
+
+/* TEST 1: 22 + 22 = 44 (no carry, no adjust needed) */
+A = 22H;
+B = 22H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_1 $', R);  /* Expected: 44 */
+
+/* TEST 2: 36 + 36 = 72 (6+6=12, needs low nibble adjust) */
+A = 36H;
+B = 36H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_2 $', R);  /* Expected: 72 */
+
+/* TEST 3: 45 + 45 = 90 */
+A = 45H;
+B = 45H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_3 $', R);  /* Expected: 90 */
+
+/* TEST 4: 99 + 01 = 00 (with carry, overflow to 100) */
+A = 99H;
+B = 01H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_4 $', R);  /* Expected: 00 */
+
+/* TEST 5: 50 + 50 = 00 (high nibble overflow) */
+A = 50H;
+B = 50H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_5 $', R);  /* Expected: 00 */
+
+/* TEST 6: 19 + 01 = 20 (low nibble 9+1 = 10, adjust to 20) */
+A = 19H;
+B = 01H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_6 $', R);  /* Expected: 20 */
+
+/* TEST 7: Chained BCD - 1234 + 4321 = 5555 */
+/* Low pair: 34 + 21 = 55 */
+DECLARE (LOW$RESULT, HIGH$RESULT) BYTE;
+LOW$RESULT = DEC(34H + 21H);
+CALL PRINT$TEST(.'dec_7l $', LOW$RESULT);  /* Expected: 55 */
+
+/* High pair: 12 + 43 = 55 */
+HIGH$RESULT = DEC(12H + 43H);
+CALL PRINT$TEST(.'dec_7h $', HIGH$RESULT);  /* Expected: 55 */
+
+/* TEST 8: Simple addition with no adjustment needed */
+A = 11H;
+B = 22H;
+R = DEC(A + B);
+CALL PRINT$TEST(.'dec_8 $', R);  /* Expected: 33 */
+
+END TEST$DEC;

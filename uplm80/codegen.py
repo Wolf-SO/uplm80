@@ -5670,14 +5670,15 @@ class CodeGenerator:
             return DataType.BYTE
 
         if name == "DEC":
-            # Convert binary value (0-15) to ASCII decimal digit ('0'-'9')
-            # Values 10-15 wrap to produce '0'-'5'
+            # DEC is the Decimal Adjust procedure for BCD arithmetic.
+            # It performs DAA (Decimal Adjust Accumulator) on the result
+            # of an addition to convert the binary result to BCD.
+            # Usage: R = DEC(A + B) where A and B are BCD values.
             arg_type = self._gen_expr(args[0])
             if arg_type == DataType.ADDRESS:
                 self._emit("ld", "a,l")  # Get low byte from L
-            # else arg_type == BYTE, value already in A
-            self._emit("and", "0fh")  # Mask to 0-15
-            self._emit("add", "a,30h")  # Add '0' ASCII code
+            # Apply DAA to convert binary addition result to BCD
+            self._emit("daa")
             return DataType.BYTE
 
         if name == "SCL":
