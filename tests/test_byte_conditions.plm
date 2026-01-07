@@ -1,0 +1,317 @@
+/*
+ * TEST: BYTE CONDITION TESTING (Bug b454629 regression test)
+ *
+ * Tests that BYTE variables are correctly tested in conditionals.
+ *
+ * Bug: BYTE conditions were tested as ADDRESS (MOV A,L; ORA H)
+ * instead of using the correct ORA A.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_byte_conditions.plm -o tests/build/test_byte_conditions.mac
+ *   um80 tests/build/test_byte_conditions.mac -o tests/build/test_byte_conditions.rel
+ *   ul80 -o tests/build/test_byte_conditions.com tests/build/test_byte_conditions.rel
+ *   cpmemu tests/build/test_byte_conditions.com
+ */
+
+0100H:
+
+TEST$BYTE$CONDITIONS:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * BYTE CONDITION TESTS
+ * ================================================================ */
+
+TEST$IF$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Test BYTE zero value in IF */
+    X = 0;
+    IF X THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'if_b0 $', RESULT);         /* Expected: 0 (zero is FALSE) */
+
+    /* Test BYTE non-zero value in IF */
+    X = 1;
+    IF X THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'if_b1 $', RESULT);         /* Expected: 1 */
+
+    X = 255;
+    IF X THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'if_b255 $', RESULT);       /* Expected: 1 */
+
+    X = 128;
+    IF X THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'if_b128 $', RESULT);       /* Expected: 1 */
+END TEST$IF$BYTE;
+
+TEST$WHILE$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE COUNT BYTE;
+
+    /* Test BYTE condition in DO WHILE */
+    X = 5;
+    COUNT = 0;
+    DO WHILE X;
+        COUNT = COUNT + 1;
+        X = X - 1;
+    END;
+    CALL PRINT$TEST(.'whl_b $', COUNT);          /* Expected: 5 */
+
+    /* Test with higher value */
+    X = 10;
+    COUNT = 0;
+    DO WHILE X;
+        COUNT = COUNT + 1;
+        X = X - 1;
+    END;
+    CALL PRINT$TEST(.'whl_b2 $', COUNT);         /* Expected: 10 */
+
+    /* Test with 0 (should not execute) */
+    X = 0;
+    COUNT = 99;
+    DO WHILE X;
+        COUNT = 0;
+    END;
+    CALL PRINT$TEST(.'whl_b0 $', COUNT);         /* Expected: 99 (unchanged) */
+END TEST$WHILE$BYTE;
+
+TEST$BYTE$EXPR$COND: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Test BYTE expression in condition */
+    X = 5;
+    Y = 3;
+    IF X - Y THEN  /* 2, non-zero = TRUE */
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'expr_c1 $', RESULT);       /* Expected: 1 */
+
+    X = 5;
+    Y = 5;
+    IF X - Y THEN  /* 0 = FALSE */
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'expr_c2 $', RESULT);       /* Expected: 0 */
+
+    /* AND expression result */
+    X = 0AAH;
+    Y = 055H;
+    IF X AND Y THEN  /* 0 = FALSE */
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'expr_c3 $', RESULT);       /* Expected: 0 */
+
+    X = 0FFH;
+    Y = 011H;
+    IF X AND Y THEN  /* 0x11 = non-zero = TRUE */
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'expr_c4 $', RESULT);       /* Expected: 1 */
+END TEST$BYTE$EXPR$COND;
+
+/* Return BYTE function */
+GET$FLAG: PROCEDURE BYTE;
+    RETURN 0;
+END GET$FLAG;
+
+GET$ONE: PROCEDURE BYTE;
+    RETURN 1;
+END GET$ONE;
+
+TEST$PROC$RETURN$COND: PROCEDURE;
+    DECLARE RESULT BYTE;
+
+    /* Test procedure return value in condition */
+    IF GET$FLAG THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'proc_c1 $', RESULT);       /* Expected: 0 */
+
+    IF GET$ONE THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'proc_c2 $', RESULT);       /* Expected: 1 */
+END TEST$PROC$RETURN$COND;
+
+TEST$NESTED$COND: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT BYTE;
+
+    X = 5;
+    Y = 0;
+
+    /* Nested IF with BYTE conditions */
+    IF X THEN DO;
+        IF Y THEN
+            RESULT = 1;
+        ELSE
+            RESULT = 2;
+    END;
+    ELSE
+        RESULT = 3;
+    CALL PRINT$TEST(.'nest_c1 $', RESULT);       /* Expected: 2 */
+
+    X = 0;
+    Y = 5;
+    IF X THEN DO;
+        IF Y THEN
+            RESULT = 1;
+        ELSE
+            RESULT = 2;
+    END;
+    ELSE
+        RESULT = 3;
+    CALL PRINT$TEST(.'nest_c2 $', RESULT);       /* Expected: 3 */
+END TEST$NESTED$COND;
+
+/* ================================================================
+ * ADDRESS CONDITION TESTS (for comparison)
+ * ================================================================ */
+
+TEST$ADDRESS$COND: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE RESULT BYTE;
+
+    /* ADDRESS zero */
+    A = 0;
+    IF A THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'addr_c0 $', RESULT);       /* Expected: 0 */
+
+    /* ADDRESS non-zero low byte only */
+    A = 1;
+    IF A THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'addr_c1 $', RESULT);       /* Expected: 1 */
+
+    /* ADDRESS non-zero high byte only */
+    A = 256;
+    IF A THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'addr_c2 $', RESULT);       /* Expected: 1 */
+
+    /* ADDRESS with both bytes non-zero */
+    A = 0ABCDH;
+    IF A THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'addr_c3 $', RESULT);       /* Expected: 1 */
+END TEST$ADDRESS$COND;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'BYTE Condition Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'====================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$IF$BYTE;
+    CALL TEST$WHILE$BYTE;
+    CALL TEST$BYTE$EXPR$COND;
+    CALL TEST$PROC$RETURN$COND;
+    CALL TEST$NESTED$COND;
+    CALL TEST$ADDRESS$COND;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$BYTE$CONDITIONS;
+
+EOF

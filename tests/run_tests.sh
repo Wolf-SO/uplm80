@@ -36,6 +36,19 @@ SKIPPED=0
 # Create build directory
 mkdir -p "$BUILD_DIR"
 
+# Function to get test-specific compiler options
+get_compiler_options() {
+    local test_name="$1"
+    case "$test_name" in
+        test_conditional_compile)
+            echo "-D TEST_DEFINED"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 # Function to compile and run a single test
 run_test() {
     local test_name="$1"
@@ -45,6 +58,7 @@ run_test() {
     local rel_file="$BUILD_DIR/${test_name}.rel"
     local com_file="$BUILD_DIR/${test_name}.com"
     local output_file="$BUILD_DIR/${test_name}_output.txt"
+    local extra_opts=$(get_compiler_options "$test_name")
 
     echo -n "Testing $test_name... "
 
@@ -62,8 +76,8 @@ run_test() {
         return 0
     fi
 
-    # Compile PL/M to assembly
-    if ! $PYTHON -m uplm80.compiler "$plm_file" -o "$mac_file" 2>"$BUILD_DIR/${test_name}_compile.err"; then
+    # Compile PL/M to assembly (with any test-specific options)
+    if ! $PYTHON -m uplm80.compiler $extra_opts "$plm_file" -o "$mac_file" 2>"$BUILD_DIR/${test_name}_compile.err"; then
         echo -e "${RED}FAILED${NC} (compilation error)"
         cat "$BUILD_DIR/${test_name}_compile.err"
         ((FAILED++))

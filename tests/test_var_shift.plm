@@ -1,0 +1,301 @@
+/*
+ * TEST: VARIABLE SHIFT COUNT (Bug b7c2c5a regression test)
+ *
+ * Tests shift operations with variable shift counts.
+ *
+ * Bug: When compiling shl(value, variable_count), the generated Z80 assembly
+ * was loading the shift count from register L instead of register A,
+ * causing the value to be shifted by itself rather than by the intended count.
+ *
+ * The fix checks the return type of the shift count expression and uses
+ * `ld c,a` for BYTE expressions (result in A) or `ld c,l` for ADDRESS
+ * expressions (result in HL).
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_var_shift.plm -o tests/build/test_var_shift.mac
+ *   um80 tests/build/test_var_shift.mac -o tests/build/test_var_shift.rel
+ *   ul80 -o tests/build/test_var_shift.com tests/build/test_var_shift.rel
+ *   cpmemu tests/build/test_var_shift.com
+ */
+
+0100H:
+
+TEST$VAR$SHIFT:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * VARIABLE SHIFT LEFT (SHL) TESTS
+ * ================================================================ */
+
+TEST$SHL$VAR: PROCEDURE;
+    DECLARE VALUE ADDRESS;
+    DECLARE BYTE$COUNT BYTE;
+    DECLARE ADDR$COUNT ADDRESS;
+    DECLARE RESULT ADDRESS;
+
+    /* SHL with BYTE shift count variable */
+    VALUE = 1;
+    BYTE$COUNT = 4;
+    RESULT = SHL(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shl_b1 $', RESULT);        /* Expected: 16 (1 << 4) */
+
+    VALUE = 5;
+    BYTE$COUNT = 3;
+    RESULT = SHL(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shl_b2 $', RESULT);        /* Expected: 40 (5 << 3) */
+
+    VALUE = 0FFH;
+    BYTE$COUNT = 8;
+    RESULT = SHL(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shl_b3 $', RESULT);        /* Expected: 65280 (255 << 8) */
+
+    /* SHL with ADDRESS shift count variable (low byte should be used) */
+    VALUE = 1;
+    ADDR$COUNT = 5;
+    RESULT = SHL(VALUE, ADDR$COUNT);
+    CALL PRINT$TEST(.'shl_a1 $', RESULT);        /* Expected: 32 (1 << 5) */
+
+    /* SHL with computed BYTE count */
+    VALUE = 1;
+    BYTE$COUNT = 2 + 3;  /* 5 */
+    RESULT = SHL(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shl_c1 $', RESULT);        /* Expected: 32 */
+
+    /* SHL with count from expression */
+    VALUE = 8;
+    RESULT = SHL(VALUE, 4 - 2);  /* Shift by 2 */
+    CALL PRINT$TEST(.'shl_e1 $', RESULT);        /* Expected: 32 */
+END TEST$SHL$VAR;
+
+/* ================================================================
+ * VARIABLE SHIFT RIGHT (SHR) TESTS
+ * ================================================================ */
+
+TEST$SHR$VAR: PROCEDURE;
+    DECLARE VALUE ADDRESS;
+    DECLARE BYTE$COUNT BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* SHR with BYTE shift count */
+    VALUE = 256;
+    BYTE$COUNT = 4;
+    RESULT = SHR(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shr_b1 $', RESULT);        /* Expected: 16 */
+
+    VALUE = 0FFH;
+    BYTE$COUNT = 4;
+    RESULT = SHR(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shr_b2 $', RESULT);        /* Expected: 15 */
+
+    VALUE = 65535;
+    BYTE$COUNT = 8;
+    RESULT = SHR(VALUE, BYTE$COUNT);
+    CALL PRINT$TEST(.'shr_b3 $', RESULT);        /* Expected: 255 */
+
+    /* SHR of BYTE value with variable count */
+    DECLARE BVAL BYTE;
+    BVAL = 128;
+    BYTE$COUNT = 3;
+    RESULT = SHR(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'shr_b4 $', RESULT);        /* Expected: 16 */
+END TEST$SHR$VAR;
+
+/* ================================================================
+ * VARIABLE ROTATE LEFT (ROL) TESTS
+ * ================================================================ */
+
+TEST$ROL$VAR: PROCEDURE;
+    DECLARE BVAL BYTE;
+    DECLARE BYTE$COUNT BYTE;
+    DECLARE RESULT BYTE;
+
+    /* ROL with variable count */
+    BVAL = 01H;
+    BYTE$COUNT = 4;
+    RESULT = ROL(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'rol_b1 $', RESULT);        /* Expected: 16 (0x10) */
+
+    BVAL = 80H;
+    BYTE$COUNT = 1;
+    RESULT = ROL(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'rol_b2 $', RESULT);        /* Expected: 1 (bit wraps) */
+
+    BVAL = 0AAH;  /* 10101010 */
+    BYTE$COUNT = 2;
+    RESULT = ROL(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'rol_b3 $', RESULT);        /* Expected: 170 (same pattern) */
+END TEST$ROL$VAR;
+
+/* ================================================================
+ * VARIABLE ROTATE RIGHT (ROR) TESTS
+ * ================================================================ */
+
+TEST$ROR$VAR: PROCEDURE;
+    DECLARE BVAL BYTE;
+    DECLARE BYTE$COUNT BYTE;
+    DECLARE RESULT BYTE;
+
+    /* ROR with variable count */
+    BVAL = 10H;
+    BYTE$COUNT = 4;
+    RESULT = ROR(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'ror_b1 $', RESULT);        /* Expected: 1 */
+
+    BVAL = 01H;
+    BYTE$COUNT = 1;
+    RESULT = ROR(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'ror_b2 $', RESULT);        /* Expected: 128 (bit wraps) */
+
+    BVAL = 55H;  /* 01010101 */
+    BYTE$COUNT = 2;
+    RESULT = ROR(BVAL, BYTE$COUNT);
+    CALL PRINT$TEST(.'ror_b3 $', RESULT);        /* Expected: 85 (same pattern) */
+END TEST$ROR$VAR;
+
+/* ================================================================
+ * MIXED OPERATIONS (ensure correct register handling)
+ * ================================================================ */
+
+TEST$MIXED$OPS: PROCEDURE;
+    DECLARE A ADDRESS;
+    DECLARE B BYTE;
+    DECLARE C BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* Multiple shifts in sequence */
+    A = 1;
+    B = 4;
+    A = SHL(A, B);
+    B = 2;
+    A = SHL(A, B);
+    CALL PRINT$TEST(.'mix_1 $', A);              /* Expected: 64 (1<<4<<2) */
+
+    /* Shift then other operations */
+    A = 256;
+    B = 4;
+    RESULT = SHR(A, B) + 10;
+    CALL PRINT$TEST(.'mix_2 $', RESULT);         /* Expected: 26 (16 + 10) */
+
+    /* Multiple different shift operations */
+    A = 1;
+    B = 8;
+    RESULT = SHL(A, B);  /* 256 */
+    B = 4;
+    RESULT = SHR(RESULT, B);  /* 16 */
+    CALL PRINT$TEST(.'mix_3 $', RESULT);         /* Expected: 16 */
+
+    /* Shift with expression count */
+    A = 1;
+    C = 3;
+    B = C + 1;  /* 4 */
+    RESULT = SHL(A, B);
+    CALL PRINT$TEST(.'mix_4 $', RESULT);         /* Expected: 16 */
+END TEST$MIXED$OPS;
+
+/* ================================================================
+ * PROCEDURE RETURNING SHIFT COUNT
+ * ================================================================ */
+
+GET$COUNT: PROCEDURE BYTE;
+    RETURN 4;
+END GET$COUNT;
+
+TEST$PROC$COUNT: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Shift count from procedure call */
+    RESULT = SHL(1, GET$COUNT);
+    CALL PRINT$TEST(.'proc_c $', RESULT);        /* Expected: 16 */
+
+    RESULT = SHR(256, GET$COUNT);
+    CALL PRINT$TEST(.'proc_c2 $', RESULT);       /* Expected: 16 */
+END TEST$PROC$COUNT;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Variable Shift Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'====================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$SHL$VAR;
+    CALL TEST$SHR$VAR;
+    CALL TEST$ROL$VAR;
+    CALL TEST$ROR$VAR;
+    CALL TEST$MIXED$OPS;
+    CALL TEST$PROC$COUNT;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$VAR$SHIFT;
+
+EOF

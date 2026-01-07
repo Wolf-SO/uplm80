@@ -1,0 +1,362 @@
+/*
+ * TEST: BITWISE OPERATORS (AND, OR, XOR, NOT)
+ *
+ * Tests all bitwise operators with BYTE and ADDRESS operands.
+ * These are fundamental PL/M features that should be well-tested.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_bitwise.plm -o tests/build/test_bitwise.mac
+ *   um80 tests/build/test_bitwise.mac -o tests/build/test_bitwise.rel
+ *   ul80 -o tests/build/test_bitwise.com tests/build/test_bitwise.rel
+ *   cpmemu tests/build/test_bitwise.com
+ */
+
+0100H:
+
+TEST$BITWISE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * BYTE AND TESTS
+ * ================================================================ */
+
+TEST$AND$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Basic AND operations */
+    X = 0FFH;
+    Y = 0FH;
+    RESULT = X AND Y;
+    CALL PRINT$TEST(.'and_b1 $', RESULT);        /* Expected: 15 (0x0F) */
+
+    X = 0AAH;  /* 10101010 */
+    Y = 055H;  /* 01010101 */
+    RESULT = X AND Y;
+    CALL PRINT$TEST(.'and_b2 $', RESULT);        /* Expected: 0 */
+
+    X = 0F0H;  /* 11110000 */
+    Y = 0FFH;  /* 11111111 */
+    RESULT = X AND Y;
+    CALL PRINT$TEST(.'and_b3 $', RESULT);        /* Expected: 240 (0xF0) */
+
+    /* AND with constants */
+    X = 0FFH;
+    RESULT = X AND 07H;
+    CALL PRINT$TEST(.'and_b4 $', RESULT);        /* Expected: 7 */
+
+    /* Mask operation */
+    X = 123;
+    RESULT = X AND 0FH;  /* Get lower nibble */
+    CALL PRINT$TEST(.'and_b5 $', RESULT);        /* Expected: 11 (123 mod 16) */
+END TEST$AND$BYTE;
+
+/* ================================================================
+ * BYTE OR TESTS
+ * ================================================================ */
+
+TEST$OR$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Basic OR operations */
+    X = 0F0H;  /* 11110000 */
+    Y = 0FH;   /* 00001111 */
+    RESULT = X OR Y;
+    CALL PRINT$TEST(.'or_b1 $', RESULT);         /* Expected: 255 (0xFF) */
+
+    X = 0AAH;  /* 10101010 */
+    Y = 055H;  /* 01010101 */
+    RESULT = X OR Y;
+    CALL PRINT$TEST(.'or_b2 $', RESULT);         /* Expected: 255 */
+
+    X = 0;
+    Y = 127;
+    RESULT = X OR Y;
+    CALL PRINT$TEST(.'or_b3 $', RESULT);         /* Expected: 127 */
+
+    /* OR with constants */
+    X = 10H;
+    RESULT = X OR 01H;  /* Set low bit */
+    CALL PRINT$TEST(.'or_b4 $', RESULT);         /* Expected: 17 (0x11) */
+END TEST$OR$BYTE;
+
+/* ================================================================
+ * BYTE XOR TESTS
+ * ================================================================ */
+
+TEST$XOR$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Basic XOR operations */
+    X = 0FFH;
+    Y = 0FFH;
+    RESULT = X XOR Y;
+    CALL PRINT$TEST(.'xor_b1 $', RESULT);        /* Expected: 0 */
+
+    X = 0AAH;  /* 10101010 */
+    Y = 055H;  /* 01010101 */
+    RESULT = X XOR Y;
+    CALL PRINT$TEST(.'xor_b2 $', RESULT);        /* Expected: 255 */
+
+    X = 0FFH;
+    Y = 0;
+    RESULT = X XOR Y;
+    CALL PRINT$TEST(.'xor_b3 $', RESULT);        /* Expected: 255 */
+
+    /* Toggle bits */
+    X = 0F0H;
+    RESULT = X XOR 0FFH;  /* Complement */
+    CALL PRINT$TEST(.'xor_b4 $', RESULT);        /* Expected: 15 (0x0F) */
+
+    /* Self XOR is 0 */
+    X = 123;
+    RESULT = X XOR X;
+    CALL PRINT$TEST(.'xor_b5 $', RESULT);        /* Expected: 0 */
+END TEST$XOR$BYTE;
+
+/* ================================================================
+ * NOT TESTS
+ * ================================================================ */
+
+TEST$NOT$BYTE: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE RESULT BYTE;
+
+    /* NOT operations */
+    X = 0;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_b1 $', RESULT);        /* Expected: 255 */
+
+    X = 0FFH;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_b2 $', RESULT);        /* Expected: 0 */
+
+    X = 0F0H;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_b3 $', RESULT);        /* Expected: 15 (0x0F) */
+
+    X = 0AAH;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_b4 $', RESULT);        /* Expected: 85 (0x55) */
+
+    /* Double NOT is identity */
+    X = 123;
+    RESULT = NOT NOT X;
+    CALL PRINT$TEST(.'not_b5 $', RESULT);        /* Expected: 123 */
+END TEST$NOT$BYTE;
+
+/* ================================================================
+ * ADDRESS BITWISE TESTS
+ * ================================================================ */
+
+TEST$ADDRESS$BITWISE: PROCEDURE;
+    DECLARE X ADDRESS;
+    DECLARE Y ADDRESS;
+    DECLARE RESULT ADDRESS;
+
+    /* 16-bit AND */
+    X = 0FF00H;
+    Y = 00FFFH;
+    RESULT = X AND Y;
+    CALL PRINT$TEST(.'and_a1 $', RESULT);        /* Expected: 3840 (0x0F00) */
+
+    /* 16-bit OR */
+    X = 0FF00H;
+    Y = 00FFH;
+    RESULT = X OR Y;
+    CALL PRINT$TEST(.'or_a1 $', RESULT);         /* Expected: 65535 (0xFFFF) */
+
+    /* 16-bit XOR */
+    X = 0AAAAH;
+    Y = 05555H;
+    RESULT = X XOR Y;
+    CALL PRINT$TEST(.'xor_a1 $', RESULT);        /* Expected: 65535 (0xFFFF) */
+
+    /* 16-bit NOT */
+    X = 0;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_a1 $', RESULT);        /* Expected: 65535 */
+
+    X = 0FFFFH;
+    RESULT = NOT X;
+    CALL PRINT$TEST(.'not_a2 $', RESULT);        /* Expected: 0 */
+END TEST$ADDRESS$BITWISE;
+
+/* ================================================================
+ * COMPLEX EXPRESSIONS
+ * ================================================================ */
+
+TEST$COMPLEX: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* Combined operations */
+    X = 0F0H;
+    Y = 0FH;
+    RESULT = (X AND Y) OR (X XOR Y);
+    CALL PRINT$TEST(.'cplx_1 $', RESULT);        /* Expected: 0 OR 255 = 255 */
+
+    /* De Morgan's law: NOT(X AND Y) = (NOT X) OR (NOT Y) */
+    X = 0AAH;
+    Y = 055H;
+    RESULT = NOT(X AND Y);
+    CALL PRINT$TEST(.'cplx_2 $', RESULT);        /* Expected: NOT 0 = 255 */
+
+    RESULT = (NOT X) OR (NOT Y);
+    CALL PRINT$TEST(.'cplx_3 $', RESULT);        /* Expected: 85 OR 170 = 255 */
+
+    /* Bit extraction */
+    X = 0ABH;  /* 10101011 */
+    RESULT = (X AND 0F0H) / 16;  /* Get high nibble */
+    CALL PRINT$TEST(.'cplx_4 $', RESULT);        /* Expected: 10 (0x0A) */
+
+    RESULT = X AND 0FH;  /* Get low nibble */
+    CALL PRINT$TEST(.'cplx_5 $', RESULT);        /* Expected: 11 (0x0B) */
+END TEST$COMPLEX;
+
+/* ================================================================
+ * BOOLEAN LOGIC (PL/M uses 0=FALSE, non-zero=TRUE)
+ * ================================================================ */
+
+TEST$BOOLEAN: PROCEDURE;
+    DECLARE FLAG1 BYTE;
+    DECLARE FLAG2 BYTE;
+    DECLARE RESULT BYTE;
+
+    /* Boolean AND (PL/M converts non-zero to TRUE=0FFH in conditionals) */
+    FLAG1 = 1;
+    FLAG2 = 1;
+    IF FLAG1 AND FLAG2 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'bool_1 $', RESULT);        /* Expected: 1 */
+
+    FLAG1 = 0;
+    FLAG2 = 1;
+    IF FLAG1 AND FLAG2 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'bool_2 $', RESULT);        /* Expected: 0 */
+
+    /* Boolean OR */
+    FLAG1 = 0;
+    FLAG2 = 5;  /* Non-zero = TRUE */
+    IF FLAG1 OR FLAG2 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'bool_3 $', RESULT);        /* Expected: 1 */
+
+    /* Boolean NOT */
+    FLAG1 = 0;
+    IF NOT FLAG1 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'bool_4 $', RESULT);        /* Expected: 1 */
+
+    FLAG1 = 1;
+    IF NOT FLAG1 THEN
+        RESULT = 1;
+    ELSE
+        RESULT = 0;
+    CALL PRINT$TEST(.'bool_5 $', RESULT);        /* Expected: 0 */
+END TEST$BOOLEAN;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'Bitwise Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'=============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$AND$BYTE;
+    CALL TEST$OR$BYTE;
+    CALL TEST$XOR$BYTE;
+    CALL TEST$NOT$BYTE;
+    CALL TEST$ADDRESS$BITWISE;
+    CALL TEST$COMPLEX;
+    CALL TEST$BOOLEAN;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$BITWISE;
+
+EOF

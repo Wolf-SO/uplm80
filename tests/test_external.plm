@@ -1,0 +1,225 @@
+/*
+ * TEST: MULTIPLE EXTERNAL PROCEDURES (Bug 69a986e regression test)
+ *
+ * Tests that the parser correctly handles files with multiple EXTERNAL
+ * procedure declarations.
+ *
+ * Bug: The parser was only parsing one procedure when the file started with
+ * LABEL: PROCEDURE, then stopping. Now continues parsing the rest of the file.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_external.plm -o tests/build/test_external.mac
+ *   um80 tests/build/test_external.mac -o tests/build/test_external.rel
+ *   ul80 -o tests/build/test_external.com tests/build/test_external.rel
+ *   cpmemu tests/build/test_external.com
+ */
+
+0100H:
+
+TEST$EXTERNAL:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* ================================================================
+ * MULTIPLE EXTERNAL DECLARATIONS
+ * The bug was: parser stopped after the first EXTERNAL procedure
+ * ================================================================ */
+
+/* First external procedure */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Second external procedure (this would not be parsed in buggy version) */
+MON2: PROCEDURE(FUNC, PARM) BYTE EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON2;
+
+/* Third external procedure */
+MON3: PROCEDURE(FUNC, PARM) ADDRESS EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON3;
+
+/* Fourth external procedure */
+BOOT: PROCEDURE EXTERNAL;
+END BOOT;
+
+/* ================================================================
+ * HELPER PROCEDURES USING EXTERNALS
+ * ================================================================ */
+
+/* Print character - uses MON1 */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string - uses MON1 */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Console input - uses MON2 */
+CON$IN: PROCEDURE BYTE;
+    RETURN MON2(1, 0);
+END CON$IN;
+
+/* Direct console I/O - uses MON2 */
+CON$DIRECT: PROCEDURE(C) BYTE;
+    DECLARE C BYTE;
+    RETURN MON2(6, C);
+END CON$DIRECT;
+
+/* Get IOBYTE - uses MON2 */
+GET$IOBYTE: PROCEDURE BYTE;
+    RETURN MON2(7, 0);
+END GET$IOBYTE;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * VARIABLES DECLARED AFTER EXTERNALS
+ * ================================================================ */
+
+DECLARE GLOBAL$VAR1 BYTE;
+DECLARE GLOBAL$VAR2 ADDRESS;
+DECLARE GLOBAL$ARRAY(10) BYTE;
+
+/* ================================================================
+ * TESTS
+ * ================================================================ */
+
+TEST$EXTERNAL$CALLS: PROCEDURE;
+    /* Test that all external procedures are accessible */
+    CALL PRINT$STR(.'ext_1 $');  /* Uses MON1 - should work */
+    CALL CRLF;
+
+    /* Test MON2 (BYTE return) - direct console output (char 0xFF is special) */
+    /* Note: Can't easily test MON2 without interactive input */
+    CALL PRINT$TEST(.'ext_ok $', 1);
+
+    /* Test that variables after externals are usable */
+    GLOBAL$VAR1 = 42;
+    GLOBAL$VAR2 = 1234;
+    CALL PRINT$TEST(.'gv1 $', GLOBAL$VAR1);      /* Expected: 42 */
+    CALL PRINT$TEST(.'gv2 $', GLOBAL$VAR2);      /* Expected: 1234 */
+END TEST$EXTERNAL$CALLS;
+
+TEST$PROCEDURES$AFTER$EXT: PROCEDURE;
+    DECLARE LOCAL$VAR BYTE;
+
+    /* Test that procedures defined after externals work correctly */
+    LOCAL$VAR = 100;
+    CALL PRINT$TEST(.'loc $', LOCAL$VAR);        /* Expected: 100 */
+
+    /* Test calling helper procedures */
+    CALL PRINT$CHAR('X');
+    CALL CRLF;
+    CALL PRINT$TEST(.'chr_ok $', 1);             /* Expected: 1 */
+END TEST$PROCEDURES$AFTER$EXT;
+
+TEST$ARRAY$AFTER$EXT: PROCEDURE;
+    DECLARE I BYTE;
+
+    /* Test array declared after externals */
+    DO I = 0 TO 9;
+        GLOBAL$ARRAY(I) = I * 3;
+    END;
+
+    CALL PRINT$TEST(.'arr_0 $', GLOBAL$ARRAY(0)); /* Expected: 0 */
+    CALL PRINT$TEST(.'arr_5 $', GLOBAL$ARRAY(5)); /* Expected: 15 */
+    CALL PRINT$TEST(.'arr_9 $', GLOBAL$ARRAY(9)); /* Expected: 27 */
+END TEST$ARRAY$AFTER$EXT;
+
+/* ================================================================
+ * ADDITIONAL PROCEDURES (ensure full file parsing)
+ * ================================================================ */
+
+COMPUTE$SUM: PROCEDURE(A, B) ADDRESS;
+    DECLARE (A, B) ADDRESS;
+    RETURN A + B;
+END COMPUTE$SUM;
+
+COMPUTE$PRODUCT: PROCEDURE(A, B) ADDRESS;
+    DECLARE (A, B) ADDRESS;
+    RETURN A * B;
+END COMPUTE$PRODUCT;
+
+TEST$LATE$PROCEDURES: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Test procedures defined at end of file */
+    RESULT = COMPUTE$SUM(100, 200);
+    CALL PRINT$TEST(.'sum $', RESULT);           /* Expected: 300 */
+
+    RESULT = COMPUTE$PRODUCT(15, 20);
+    CALL PRINT$TEST(.'prod $', RESULT);          /* Expected: 300 */
+END TEST$LATE$PROCEDURES;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'External Proc Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$EXTERNAL$CALLS;
+    CALL TEST$PROCEDURES$AFTER$EXT;
+    CALL TEST$ARRAY$AFTER$EXT;
+    CALL TEST$LATE$PROCEDURES;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$EXTERNAL;
+
+EOF

@@ -1,0 +1,201 @@
+/*
+ * TEST: DOUBLE() BUILT-IN FUNCTION (Bug 863755b regression test)
+ *
+ * Tests the DOUBLE() built-in which converts a BYTE to ADDRESS
+ * by multiplying by 256 (or equivalently, placing in high byte).
+ *
+ * Bug: Constant folding was returning value unchanged instead of
+ * multiplying by 256.
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/test_double_builtin.plm -o tests/build/test_double_builtin.mac
+ *   um80 tests/build/test_double_builtin.mac -o tests/build/test_double_builtin.rel
+ *   ul80 -o tests/build/test_double_builtin.com tests/build/test_double_builtin.rel
+ *   cpmemu tests/build/test_double_builtin.com
+ */
+
+0100H:
+
+TEST$DOUBLE:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * DOUBLE() TESTS
+ * ================================================================ */
+
+TEST$DOUBLE$CONST: PROCEDURE;
+    DECLARE RESULT ADDRESS;
+
+    /* Constant folding tests */
+    RESULT = DOUBLE(0);
+    CALL PRINT$TEST(.'dbl_0 $', RESULT);         /* Expected: 0 */
+
+    RESULT = DOUBLE(1);
+    CALL PRINT$TEST(.'dbl_1 $', RESULT);         /* Expected: 256 */
+
+    RESULT = DOUBLE(2);
+    CALL PRINT$TEST(.'dbl_2 $', RESULT);         /* Expected: 512 */
+
+    RESULT = DOUBLE(10);
+    CALL PRINT$TEST(.'dbl_10 $', RESULT);        /* Expected: 2560 */
+
+    RESULT = DOUBLE(255);
+    CALL PRINT$TEST(.'dbl_255 $', RESULT);       /* Expected: 65280 */
+
+    RESULT = DOUBLE(100);
+    CALL PRINT$TEST(.'dbl_100 $', RESULT);       /* Expected: 25600 */
+END TEST$DOUBLE$CONST;
+
+TEST$DOUBLE$VAR: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* Variable tests */
+    X = 1;
+    RESULT = DOUBLE(X);
+    CALL PRINT$TEST(.'dblv_1 $', RESULT);        /* Expected: 256 */
+
+    X = 5;
+    RESULT = DOUBLE(X);
+    CALL PRINT$TEST(.'dblv_5 $', RESULT);        /* Expected: 1280 */
+
+    X = 128;
+    RESULT = DOUBLE(X);
+    CALL PRINT$TEST(.'dblv_128 $', RESULT);      /* Expected: 32768 */
+
+    X = 0;
+    RESULT = DOUBLE(X);
+    CALL PRINT$TEST(.'dblv_0 $', RESULT);        /* Expected: 0 */
+END TEST$DOUBLE$VAR;
+
+TEST$DOUBLE$EXPR: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE Y BYTE;
+    DECLARE RESULT ADDRESS;
+
+    /* Expression tests - DOUBLE in expressions */
+    X = 1;
+    Y = 5;
+    RESULT = DOUBLE(X) + Y;
+    CALL PRINT$TEST(.'dble_1 $', RESULT);        /* Expected: 256 + 5 = 261 */
+
+    /* Building 16-bit address from high and low bytes */
+    X = 2;    /* High byte */
+    Y = 100;  /* Low byte */
+    RESULT = DOUBLE(X) + Y;
+    CALL PRINT$TEST(.'dble_2 $', RESULT);        /* Expected: 512 + 100 = 612 (0x0264) */
+
+    /* Chain of operations */
+    X = 1;
+    RESULT = DOUBLE(X) + DOUBLE(X);
+    CALL PRINT$TEST(.'dble_3 $', RESULT);        /* Expected: 256 + 256 = 512 */
+END TEST$DOUBLE$EXPR;
+
+TEST$DOUBLE$COMBINE: PROCEDURE;
+    DECLARE HIGH BYTE;
+    DECLARE LOW BYTE;
+    DECLARE ADDR ADDRESS;
+
+    /* Common pattern: combine high and low bytes into address */
+    HIGH = 01H;
+    LOW = 00H;
+    ADDR = DOUBLE(HIGH) + LOW;
+    CALL PRINT$TEST(.'comb_1 $', ADDR);          /* Expected: 256 (0x0100) */
+
+    HIGH = 0FFH;
+    LOW = 0FFH;
+    ADDR = DOUBLE(HIGH) + LOW;
+    CALL PRINT$TEST(.'comb_2 $', ADDR);          /* Expected: 65535 (0xFFFF) */
+
+    HIGH = 10H;
+    LOW = 20H;
+    ADDR = DOUBLE(HIGH) + LOW;
+    CALL PRINT$TEST(.'comb_3 $', ADDR);          /* Expected: 4128 (0x1020) */
+END TEST$DOUBLE$COMBINE;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'DOUBLE() Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'==============$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$DOUBLE$CONST;
+    CALL TEST$DOUBLE$VAR;
+    CALL TEST$DOUBLE$EXPR;
+    CALL TEST$DOUBLE$COMBINE;
+
+    CALL CRLF;
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$DOUBLE;
+
+EOF
