@@ -234,35 +234,41 @@ class CodeGenerator:
     def _check_impossible_comparison(self, left: Expr, right: Expr, op: BinaryOp) -> None:
         """Check for comparisons that can never or always be true and raise an error.
 
-        Detects cases like:
-        - BYTE variable compared to -1 (where -1 as 16-bit is 0xFFFF, not 0xFF)
-        - BYTE variable compared to constants outside 0-255 range
+        For BYTE compared to constant outside 0-255:
+        - For = and <>, allow truncation only for "negative byte" values (0xFF00-0xFFFF, i.e. -256 to -1)
+        - For <, >, <=, >=, these are always true/false so we error
         """
         left_type = self._get_expr_type(left)
         right_val = self._try_eval_const(right)
 
         if left_type == DataType.BYTE and right_val is not None:
-            # For BYTE comparisons, the value must be in 0-255 range
-            # Negative values like -1 become 0xFFFF (65535) in unsigned 16-bit
+            # For BYTE comparisons, check if value is outside 0-255 range
             if right_val < 0:
-                # Negative constant - convert to unsigned 16-bit
                 unsigned_val = right_val & 0xFFFF
             else:
                 unsigned_val = right_val
 
-            # Check if value is outside BYTE range
             if unsigned_val > 255:
-                # This comparison is impossible or trivial
                 from .errors import CodeGenError, SourceLocation
                 loc = None
                 if hasattr(right, 'span') and right.span:
                     loc = SourceLocation(right.span.start_line, right.span.start_col)
 
-                if op == BinaryOp.EQ:
-                    msg = f"comparison BYTE = {right_val} is always false (BYTE can only hold 0-255, {right_val} as 16-bit is {unsigned_val})"
-                elif op == BinaryOp.NE:
-                    msg = f"comparison BYTE <> {right_val} is always true (BYTE can only hold 0-255, {right_val} as 16-bit is {unsigned_val})"
-                elif op == BinaryOp.LT:
+                # For = and <>, allow truncation only for "negative byte" values (high byte is 0xFF)
+                # This handles BYTE <> -1 (0xFFFF -> 0xFF) but catches BYTE <> 0x123
+                if op in (BinaryOp.EQ, BinaryOp.NE):
+                    if (unsigned_val & 0xFF00) == 0xFF00:
+                        return  # Valid: -256 to -1 range, will truncate to byte
+                    # Otherwise, error - constant like 256 or 0x123 shouldn't be compared to BYTE
+                    byte_val = unsigned_val & 0xFF
+                    if op == BinaryOp.EQ:
+                        msg = f"comparison BYTE = {unsigned_val} is always false (BYTE can only hold 0-255; truncating to {byte_val} would change semantics)"
+                    else:
+                        msg = f"comparison BYTE <> {unsigned_val} is always true (BYTE can only hold 0-255; truncating to {byte_val} would change semantics)"
+                    raise CodeGenError(msg, loc)
+
+                # For ordering comparisons, values outside 0-255 give always true/false
+                if op == BinaryOp.LT:
                     msg = f"comparison BYTE < {right_val} is always true (BYTE can only hold 0-255)"
                 elif op == BinaryOp.LE:
                     msg = f"comparison BYTE <= {right_val} is always true (BYTE can only hold 0-255)"
@@ -2537,11 +2543,15 @@ class CodeGenerator:
         right_type = self._get_expr_type(condition.right)
         both_bytes = (left_type == DataType.BYTE and right_type == DataType.BYTE)
 
-        if both_bytes:
-            # Byte comparison with constant using cp n
+        # Byte comparison with constant - use cp n
+        # Handle both regular bytes (0-255) and "negative bytes" (0xFF00-0xFFFF like -1)
+        if left_type == DataType.BYTE:
             const_val = None
-            if isinstance(condition.right, NumberLiteral) and condition.right.value <= 255:
-                const_val = condition.right.value
+            if isinstance(condition.right, NumberLiteral):
+                val = condition.right.value
+                # Allow direct byte values (0-255) or negative byte values (0xFF00-0xFFFF)
+                if val <= 255 or (val & 0xFF00) == 0xFF00:
+                    const_val = val & 0xFF
             elif isinstance(condition.right, StringLiteral) and len(condition.right.value) == 1:
                 const_val = ord(condition.right.value[0])
 
@@ -2550,7 +2560,7 @@ class CodeGenerator:
                 self._emit("cp", self._format_number(const_val))
                 self._emit_jump_on_false(op, false_label)
                 return True
-            else:
+            elif both_bytes:
                 # Byte-to-byte comparison - load right first for efficient SUB
                 self._gen_expr(condition.right)  # Result in A
                 self._emit("ld", "b,a")  # Save right
@@ -2558,6 +2568,10 @@ class CodeGenerator:
                 self._emit("sub", "b")    # A = left - right, flags set
                 self._emit_jump_on_false(op, false_label)
                 return True
+
+        if both_bytes:
+            # Both bytes but not constant - already handled above
+            pass
         else:
             # Optimize ADDRESS comparison with 0: use ld a,l / or h instead of subtraction
             if op in (BinaryOp.EQ, BinaryOp.NE) and isinstance(condition.right, NumberLiteral) and condition.right.value == 0:
@@ -2698,13 +2712,24 @@ class CodeGenerator:
         right_type = self._get_expr_type(condition.right)
         both_bytes = (left_type == DataType.BYTE and right_type == DataType.BYTE)
 
-        if both_bytes:
-            if isinstance(condition.right, NumberLiteral) and condition.right.value <= 255:
+        # Byte comparison with constant - use cp n
+        # Handle both regular bytes (0-255) and "negative bytes" (0xFF00-0xFFFF like -1)
+        if left_type == DataType.BYTE:
+            const_val = None
+            if isinstance(condition.right, NumberLiteral):
+                val = condition.right.value
+                # Allow direct byte values (0-255) or negative byte values (0xFF00-0xFFFF)
+                if val <= 255 or (val & 0xFF00) == 0xFF00:
+                    const_val = val & 0xFF
+            elif isinstance(condition.right, StringLiteral) and len(condition.right.value) == 1:
+                const_val = ord(condition.right.value[0])
+
+            if const_val is not None:
                 self._gen_expr(condition.left)
-                self._emit("cp", self._format_number(condition.right.value))
+                self._emit("cp", self._format_number(const_val))
                 self._emit_jump_on_true(op, true_label)
                 return True
-            else:
+            elif both_bytes:
                 # Byte-to-byte comparison - load right first for efficient SUB
                 self._gen_expr(condition.right)
                 self._emit("ld", "b,a")  # Save right
@@ -2712,7 +2737,8 @@ class CodeGenerator:
                 self._emit("sub", "b")    # A = left - right
                 self._emit_jump_on_true(op, true_label)
                 return True
-        else:
+
+        if not both_bytes:
             # Optimize ADDRESS comparison with 0: use ld a,l / or h instead of subtraction
             if op in (BinaryOp.EQ, BinaryOp.NE) and isinstance(condition.right, NumberLiteral) and condition.right.value == 0:
                 self._gen_expr(condition.left)  # Result in HL
@@ -4366,18 +4392,23 @@ class CodeGenerator:
             self._check_impossible_comparison(expr.left, expr.right, op)
 
         # Special case: byte comparison with constant - use cp n
+        # When comparing BYTE to a constant, truncate constant to byte if valid
+        # (values 0-255 or 0xFF00-0xFFFF for "negative bytes" like -1)
         if op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,
                   BinaryOp.LE, BinaryOp.GE):
-            if both_bytes:
+            if left_type == DataType.BYTE:
                 const_val = None
-                if isinstance(expr.right, NumberLiteral) and expr.right.value <= 255:
-                    const_val = expr.right.value
+                if isinstance(expr.right, NumberLiteral):
+                    val = expr.right.value
+                    # Allow direct byte values (0-255) or negative byte values (0xFF00-0xFFFF)
+                    if val <= 255 or (val & 0xFF00) == 0xFF00:
+                        const_val = val & 0xFF
                 elif isinstance(expr.right, StringLiteral) and len(expr.right.value) == 1:
                     const_val = ord(expr.right.value[0])
 
                 if const_val is not None:
                     return self._gen_byte_comparison_const(expr.left, op, const_val)
-                else:
+                elif both_bytes:
                     return self._gen_byte_comparison(expr.left, expr.right, op)
 
         # For byte operations, use efficient byte path
