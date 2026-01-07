@@ -5742,10 +5742,20 @@ class CodeGenerator:
                 if count_const == 0:
                     # Zero count - no-op
                     return None
-                # Generate: ld de,dest; ld hl,source; ld bc,count; ldir
-                self._gen_expr(args[2])  # dest -> HL
-                self._emit("ex", "de,hl")  # dest -> DE
-                self._gen_expr(args[1])  # source -> HL
+                # Generate: dest -> DE, source -> HL, bc=count, ldir
+                # Must check if source expression clobbers DE
+                source_preserves_de = self._expr_preserves_de(args[1])
+                if source_preserves_de:
+                    # Source is simple - can load dest to DE first
+                    self._gen_expr(args[2])  # dest -> HL
+                    self._emit("ex", "de,hl")  # dest -> DE
+                    self._gen_expr(args[1])  # source -> HL (preserves DE)
+                else:
+                    # Source is complex and may clobber DE - must save dest
+                    self._gen_expr(args[2])  # dest -> HL
+                    self._emit("push", "hl")  # save dest
+                    self._gen_expr(args[1])  # source -> HL (may clobber DE)
+                    self._emit("pop", "de")  # dest -> DE
                 self._emit("ld", f"bc,{self._format_number(count_const)}")
                 self._emit("ldir")
             else:
