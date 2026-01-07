@@ -319,3 +319,153 @@ Then evaluate the subtree with **higher** register need **first** - this minimiz
 - [Register Allocation via Graph Coloring (Chaitin)](https://dl.acm.org/doi/10.1145/872726.806984)
 - [CS701 Lecture Notes - Register Allocation](https://pages.cs.wisc.edu/~horwitz/CS701-NOTES/5.REGISTER-ALLOCATION.html)
 - [Register Allocation Algorithms - GeeksforGeeks](https://www.geeksforgeeks.org/register-allocation-algorithms-in-compiler-design/)
+
+---
+
+## Implementation Status
+
+### Phase 1: Infrastructure ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Added `RegState` enum: FREE, BUSY, SPILLED
+- Added `RegClass` enum: BYTE, ADDR, ADDR_ALT, INDEX
+- Added `RegDescriptor` dataclass for per-register state
+- Added `RegisterAllocator` class with:
+  - `need_reg(reg, owner, emit_fn)` - claim register, auto-spill if busy
+  - `release_reg(reg, emit_fn)` - release register, auto-restore if spilled
+  - `with_reg(reg, owner, emit_fn)` - context manager for scoped use
+  - `mark_busy/mark_free` - for tracking existing code
+  - `get_status()` - debug output
+  - Statistics tracking (claims, spills, restores)
+- Added `self.regs = RegisterAllocator()` to CodeGenerator
+
+**Testing**:
+- All 46 existing test files compile successfully
+- Manual testing of spill/restore behavior verified
+
+**Learnings**:
+- The 'a' register needs special handling: push/pop uses 'af' (A + flags)
+- Spill stack ordering is LIFO - must release in reverse order of claim
+- Statistics are useful for understanding allocation patterns
+
+### Phase 2: Instrument Existing Code ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Added `reg_debug` flag to CodeGenerator (enabled via --debug CLI flag)
+- Added `_track_emit()` to monitor push/pop/ex operations
+- Added `_check_regs_free()` for future boundary assertions
+- Added `_reg_debug_log()` for debug output
+- Statistics printed at end of compilation in debug mode
+
+**Baseline Statistics** (across 46 test files):
+- 501 `ex de,hl` operations
+- 484 manual pop operations
+- 481 manual push operations
+
+**Learnings**:
+- Push/pop are nearly balanced (3 difference from procedure prologue/epilogue)
+- This baseline helps measure efficiency of allocator migration
+- The `ex de,hl` pattern is very common - binary expr evaluation uses it heavily
+
+### Phase 3: Migrate Binary Expressions ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Modified `_gen_binary()` to use RegisterAllocator
+- Added `used_general_path` tracking to ensure `release_reg` is called after operations
+- Simple path (leaf operands): Uses `mark_busy`/`mark_free` for explicit tracking
+- General path (complex operands): Uses `need_reg`/`release_reg` with automatic spill/restore
+- Fixed bug where `release_reg` was called before the operation, causing incorrect restores
+
+**Statistics** (across 46 test files):
+- Baseline (before): 501 ex_de_hl, 484 pops, 481 pushes
+- After Phase 3: 564 ex_de_hl, 428 pops, 425 pushes
+- Allocator usage: 63 claims, 2 spills, 2 restores
+
+**Key fix**: For nested expressions like `(A+B) + (C+D)`:
+- The inner expression's `release_reg` must happen AFTER its `add hl,de`, not before
+- Added `used_general_path` flag to track which path was taken
+- Release happens after all operations complete (ADD, SUB, MUL, etc.)
+
+**Learnings**:
+- The simple path optimization (evaluating right first when left is simple) must also check `is_free('de')` to avoid clobbering outer expression's DE value
+- Spill/restore pairs must bracket the operation, not just the operand evaluation
+- The comparison operations have an early return - must release DE before returning
+
+### Phase 4: Migrate All Expression Types ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Migrated `_gen_subscript_addr()` to use RegisterAllocator for variable index expressions
+- Migrated member array subscript in `_gen_call_expr()` to use allocator
+- Migrated member array subscript in `_gen_operand_addr()` to use allocator
+- All array indexing now uses `need_reg`/`release_reg` instead of manual `push hl`/`pop de`
+
+**Statistics** (across 46 test files):
+- Baseline (before): 501 ex_de_hl, 484 pops, 481 pushes
+- After Phase 4: 603 ex_de_hl, 403 pops, 400 pushes
+- Allocator usage: 102 claims, 9 spills, 9 restores
+
+**Key insight**: The push/pop patterns in assignment code are safe because:
+1. They save VALUE to stack (not DE) while computing target address
+2. Target address computation uses allocator for subscript/binary operations
+3. Assignments are statements (not sub-expressions) so no outer DE claim conflicts
+
+**Patterns NOT migrated** (correctly):
+- Interrupt handler save/restore (push/pop all registers)
+- Carry chain operations (push/pop AF for carry flag preservation)
+- MOVE builtin (specific pattern for source/dest pointers)
+- Assignment value save (push hl to save value during address computation)
+
+These patterns don't conflict with the allocator because they either:
+- Are at statement boundaries (registers free before/after)
+- Use stack for values, not for DE register saving
+- Have specific semantics that require exact register usage
+
+### Phase 5: Sethi-Ullman Optimization ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Added `_label_reg_need(expr)` method implementing Sethi-Ullman labeling algorithm
+- Labels each expression node with minimum registers needed:
+  - Leaves (literals, identifiers): 1 register
+  - Unary expressions: same as operand
+  - Binary expressions: max(left, right) if different, left+1 if equal
+  - Subscripts, calls: 2 registers (conservative)
+- Added `_lookup_symbol()` helper for consistent symbol lookup
+- Modified `_gen_binary()` with three evaluation paths:
+  1. **Simple path**: left preserves DE AND DE free → eval right first (no allocator)
+  2. **Sethi-Ullman path**: right needs more registers → eval right first (with allocator)
+  3. **General path**: left needs >= registers → eval left first (with allocator)
+
+**How it works**:
+For expression `A + ((B + C) + (D + E))`:
+- Left (A): needs 1 register
+- Right ((B+C) + (D+E)): needs 3 registers (each sub-expr needs 2, combined needs 3)
+- Sethi-Ullman says: evaluate right first (needs more registers)
+- This way, right uses 3 registers, then result goes to DE
+- Left only needs 1 register, no spill needed
+
+**Statistics** (across 46 test files):
+- Same as Phase 4: 603 ex_de_hl, 403/400 pop/push, 102 claims, 9 spills
+- The test suite expressions are relatively balanced, so Sethi-Ullman doesn't reduce spills
+- Real benefit is for asymmetric expressions like `A + ((B + C) + (D + E))`
+
+**Verification**:
+- Created `/tmp/test_sethi_ullman.plm` with asymmetric expressions
+- 5 complex expressions compiled with only 1 spill
+- All 46 test files compile successfully
+- DRI sources (ED, PIP) compile without spills
+
+**Learnings**:
+- Sethi-Ullman is most effective for expressions where one subtree is significantly more complex
+- Real-world PL/M code tends to use simple expressions, so benefit is limited
+- The simple path optimization (Phase 3) catches most practical cases
+- Combined approach: simple path → Sethi-Ullman → general path
