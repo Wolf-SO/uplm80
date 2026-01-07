@@ -1361,10 +1361,13 @@ class CodeGenerator:
 
         # Calculate size
         if decl.struct_members:
-            size = sum(
+            # Size of one structure element
+            struct_size = sum(
                 (m.dimension or 1) * (1 if m.data_type == DataType.BYTE else 2)
                 for m in decl.struct_members
             )
+            # Multiply by array dimension if this is an array of structures
+            size = struct_size * (decl.dimension or 1)
             elem_size = 2  # Structures are ADDRESS-sized elements
         else:
             elem_size = 1 if decl.data_type == DataType.BYTE else 2
@@ -4880,18 +4883,26 @@ class CodeGenerator:
         member_type = DataType.BYTE
 
         # Get the base variable's symbol to find struct_members
+        sym = None
         if isinstance(expr.base, Identifier):
             sym = self.symbols.lookup(expr.base.name)
-            if sym and sym.struct_members:
-                for member in sym.struct_members:
-                    if member.name == expr.member:
-                        member_type = member.data_type
-                        break
-                    # Add size of this member
-                    member_size = 2 if member.data_type == DataType.ADDRESS else 1
-                    if member.dimension:
-                        member_size *= member.dimension
-                    offset += member_size
+        elif isinstance(expr.base, CallExpr) and isinstance(expr.base.callee, Identifier):
+            # Array of structures: POINTS(0).X - look up array's struct_members
+            sym = self.symbols.lookup(expr.base.callee.name)
+        elif isinstance(expr.base, SubscriptExpr) and isinstance(expr.base.base, Identifier):
+            # Subscript form: look up array's struct_members
+            sym = self.symbols.lookup(expr.base.base.name)
+
+        if sym and sym.struct_members:
+            for member in sym.struct_members:
+                if member.name == expr.member:
+                    member_type = member.data_type
+                    break
+                # Add size of this member
+                member_size = 2 if member.data_type == DataType.ADDRESS else 1
+                if member.dimension:
+                    member_size *= member.dimension
+                offset += member_size
 
         return offset, member_type
 
