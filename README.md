@@ -63,7 +63,6 @@ python -m uplm80.compiler input.plm -o output.mac
 ```
 
 Options:
-- `-t 8080` or `-t z80` - Target CPU (default: Z80)
 - `-m cpm` or `-m bare` - Runtime mode (default: cpm)
   - `cpm`: For new PL/M programs, maximum stack under BDOS
   - `bare`: Original Digital Research compatible (jump to start-3)
